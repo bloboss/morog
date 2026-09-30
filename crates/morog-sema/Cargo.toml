@@ -1,0 +1,10 @@
+[package]
+name = "morog-sema"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+morg-parser.workspace = true

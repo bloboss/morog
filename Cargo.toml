@@ -1,0 +1,19 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+blake3 = "1"
+clap = { version = "4", features = ["derive"] }
+morg-parser = { path = "../morg/crates/morg-parser" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+morog-bib = { path = "crates/morog-bib" }
+morog-index = { path = "crates/morog-index" }
+morog-lsp = { path = "crates/morog-lsp" }
+morog-sema = { path = "crates/morog-sema" }

@@ -1,0 +1,11 @@
+[package]
+name = "morog"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+clap.workspace = true
+morog-bib.workspace = true
+morog-index.workspace = true
+morog-sema.workspace = true
