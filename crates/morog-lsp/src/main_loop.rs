@@ -138,6 +138,10 @@ fn server_capabilities(encoding: PositionEncoding) -> ServerCapabilities {
                 },
             ),
         ),
+        rename_provider: Some(lsp_types::OneOf::Right(lsp_types::RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: Default::default(),
+        })),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         references_provider: Some(lsp_types::OneOf::Left(true)),
         document_symbol_provider: Some(lsp_types::OneOf::Left(true)),
@@ -255,6 +259,16 @@ fn on_request(state: &mut GlobalState, request: Request) {
                 p.text_document_position.text_document.uri.clone()
             ),
             handlers::completion::handle
+        ),
+        r::PrepareRenameRequest::METHOD => handle!(
+            r::PrepareRenameRequest,
+            |p: &lsp_types::TextDocumentPositionParams| Some(p.text_document.uri.clone()),
+            handlers::rename::prepare
+        ),
+        r::Rename::METHOD => handle!(
+            r::Rename,
+            |p: &lsp_types::RenameParams| Some(p.text_document_position.text_document.uri.clone()),
+            handlers::rename::handle
         ),
         r::InlayHintRequest::METHOD => handle!(
             r::InlayHintRequest,

@@ -268,6 +268,91 @@ fn completion_labels(client: &mut Client, uri: &str, line: u32, character: u32) 
 }
 
 #[test]
+fn rename_produces_a_multi_file_workspace_edit() {
+    let mut client = Client::start(&["utf-8"], json!({ "vaultRoot": "/vault" }));
+    let sla_uri = "file:///vault/sla.md";
+    let arg_uri = "file:///vault/arg.md";
+    client.open(
+        sla_uri,
+        1,
+        "---\nid: sla\nuuid: 0192f3c4-7a11-7bbb-8f55-111111111111\nkind: topic\n---\n\nEvidence [@w2004]. #anchor e1\n",
+    );
+    client.open(
+        arg_uri,
+        1,
+        "---\nid: arg\nkind: argument\nthesis: \"t\"\nrelations:\n  - { to: sla#e1, stance: supports }\n---\n",
+    );
+
+    // prepareRename on the id declaration offers the id range.
+    let prepared = client.request(
+        "textDocument/prepareRename",
+        json!({
+            "textDocument": { "uri": sla_uri },
+            "position": { "line": 1, "character": 5 },
+        }),
+    );
+    assert_eq!(prepared["placeholder"], "sla");
+
+    // rename edits both files and renames sla.md; the uuid line is
+    // untouched (permanent identity).
+    let edit = client.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": sla_uri },
+            "position": { "line": 1, "character": 5 },
+            "newName": "specific-leaf-area",
+        }),
+    );
+    let operations = edit["documentChanges"].as_array().unwrap();
+    assert_eq!(operations.len(), 3);
+    assert_eq!(operations[0]["textDocument"]["uri"], sla_uri);
+    assert_eq!(operations[0]["edits"][0]["newText"], "specific-leaf-area");
+    assert_eq!(operations[0]["edits"][0]["range"]["start"]["line"], 1);
+    assert_eq!(operations[0]["edits"].as_array().unwrap().len(), 1);
+    assert_eq!(operations[1]["textDocument"]["uri"], arg_uri);
+    assert_eq!(operations[1]["edits"][0]["newText"], "specific-leaf-area");
+    assert_eq!(operations[1]["edits"][0]["range"]["start"]["line"], 5);
+    assert_eq!(operations[2]["kind"], "rename");
+    assert_eq!(operations[2]["oldUri"], sla_uri);
+    assert_eq!(
+        operations[2]["newUri"],
+        "file:///vault/specific-leaf-area.md"
+    );
+
+    // Renaming a source id is refused.
+    client.open(
+        "file:///vault/w2004.md",
+        1,
+        "---\nid: w2004\nkind: source\n---\n",
+    );
+    client.next_id += 1;
+    let id = RequestId::from(client.next_id);
+    client
+        .connection
+        .sender
+        .send(Message::Request(Request::new(
+            id.clone(),
+            "textDocument/rename".to_owned(),
+            json!({
+                "textDocument": { "uri": "file:///vault/w2004.md" },
+                "position": { "line": 1, "character": 5 },
+                "newName": "other",
+            }),
+        )))
+        .unwrap();
+    loop {
+        if let Message::Response(response) = client.recv() {
+            assert_eq!(response.id, id);
+            let error = response.response_result.expect_err("rename must refuse");
+            assert!(error.message.contains("bibrat key"), "{}", error.message);
+            break;
+        }
+    }
+
+    client.shutdown();
+}
+
+#[test]
 fn completion_over_open_documents() {
     let mut client = Client::start(&["utf-8"], json!({ "vaultRoot": "/vault" }));
     let sla_uri = "file:///vault/sla.md";

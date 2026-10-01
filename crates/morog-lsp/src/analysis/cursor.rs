@@ -36,6 +36,9 @@ pub enum CursorContext {
     FmKey { key: String, span: Span },
     /// A top-level frontmatter value (not covered by a finer context).
     FmValue { key: String, span: Span },
+    /// A `#anchor name` declaration in the body (`span` covers the whole
+    /// tag). From the parse tree, so absent on facts-only entries.
+    AnchorDecl { name: String, span: Span },
     /// Anything else.
     Prose,
 }
@@ -88,6 +91,13 @@ pub fn classify(fa: &FileAnalysis, offset: usize) -> CursorContext {
         };
     }
 
+    // `#anchor name` declarations, from the parse tree when present.
+    if let Some(doc) = fa.doc.as_ref()
+        && let Some((name, span)) = anchor_decl_at(doc, offset)
+    {
+        return CursorContext::AnchorDecl { name, span };
+    }
+
     // Frontmatter keys and values, from the parse tree when present.
     if let Some(fm) = fa.doc.as_ref().and_then(|d| d.frontmatter.as_ref())
         && contains(fm.span, offset)
@@ -115,6 +125,57 @@ pub fn classify(fa: &FileAnalysis, offset: usize) -> CursorContext {
 /// of a reference still counts, matching editor expectations.
 fn contains(span: Span, offset: usize) -> bool {
     span.start <= offset && offset <= span.end
+}
+
+/// The `#anchor name` tag containing `offset`, if any. Callout bodies are
+/// skipped: their spans are relative to the parser's reassembled buffer.
+fn anchor_decl_at(doc: &morg_parser::Document, offset: usize) -> Option<(String, Span)> {
+    use morg_parser::{Block, InlineContent, InlineKind, Tag, TagKind};
+
+    fn from_tag(tag: &Tag, offset: usize) -> Option<(String, Span)> {
+        match &tag.kind {
+            TagKind::Anchor { name } if contains(tag.span, offset) => {
+                Some((name.clone(), tag.span))
+            }
+            _ => None,
+        }
+    }
+    fn from_inline(content: &InlineContent, offset: usize) -> Option<(String, Span)> {
+        content.segments.iter().find_map(|seg| match &seg.kind {
+            InlineKind::Tag(tag) => from_tag(tag, offset),
+            InlineKind::Bold(inner)
+            | InlineKind::Italic(inner)
+            | InlineKind::Strikethrough(inner) => from_inline(inner, offset),
+            InlineKind::Link(link) => link.tags.iter().find_map(|tag| from_tag(tag, offset)),
+            _ => None,
+        })
+    }
+    fn from_block(block: &Block, offset: usize) -> Option<(String, Span)> {
+        match block {
+            Block::Paragraph(p) => from_inline(&p.content, offset),
+            Block::Heading(h) => from_inline(&h.content, offset),
+            Block::List(l) => l.items.iter().find_map(|item| {
+                from_inline(&item.content, offset)
+                    .or_else(|| {
+                        item.description
+                            .as_ref()
+                            .and_then(|desc| from_inline(desc, offset))
+                    })
+                    .or_else(|| {
+                        item.children
+                            .iter()
+                            .find_map(|child| from_block(child, offset))
+                    })
+            }),
+            Block::BlockTag(tag) => from_tag(tag, offset),
+            Block::CodeBlock(cb) => cb.tags.iter().find_map(|tag| from_tag(tag, offset)),
+            Block::FootnoteDefinition(f) => from_inline(&f.content, offset),
+            _ => None,
+        }
+    }
+    doc.children
+        .iter()
+        .find_map(|block| from_block(block, offset))
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +592,24 @@ mod tests {
                         end: 37,
                         line: 4,
                         col: 8,
+                    },
+                }
+            "#]],
+        );
+    }
+
+    #[test]
+    fn classify_anchor_decl() {
+        check(
+            "---\nid: a\nkind: topic\n---\n\nCited [@w]. #anchor evid$0ence-1\n",
+            expect![[r#"
+                AnchorDecl {
+                    name: "evidence-1",
+                    span: Span {
+                        start: 39,
+                        end: 57,
+                        line: 6,
+                        col: 13,
                     },
                 }
             "#]],
