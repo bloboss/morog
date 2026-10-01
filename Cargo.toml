@@ -11,12 +11,19 @@ license = "MIT"
 biblatex = "0.12"
 blake3 = "1"
 clap = { version = "4", features = ["derive"] }
+crossbeam-channel = "0.5"
+expect-test = "1"
 ignore = "0.4"
+imbl = "7"
+lsp-server = "0.10"
+lsp-types = "0.95"
 morg-parser = { path = "../morg/crates/morg-parser" }
 notify = "8"
 petgraph = { version = "0.8", default-features = false, features = ["stable_graph"] }
 rayon = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "1"
 uuid = "1"
 

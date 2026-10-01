@@ -1,20 +1,16 @@
-//! Language server for morog vaults, in rust-analyzer style.
+//! Language server for morog vaults, in rust-analyzer style (plan §5).
 //!
-//! Planned layout (nothing implemented yet, and no LSP dependencies pulled
-//! in until the skeleton is real):
+//! Layering:
 //!
-//! - **`main_loop`** — the server's single-threaded event loop: multiplexes
-//!   LSP requests/notifications, vfs change events, and finished background
-//!   tasks; owns the global state and hands out snapshots.
-//! - **`vfs`** — an in-memory view of vault files, layered over the disk:
-//!   open editor buffers shadow on-disk content, changes arrive as events
-//!   with document versions.
-//! - **analysis snapshots** — immutable, cheaply cloneable views of the
-//!   analysis state (parsed documents, `FileFacts`, the citation table).
-//!   Requests run against a snapshot on worker threads and are cancelled by
-//!   simply dropping the snapshot when newer state exists, so typing never
-//!   blocks on long analysis.
+//! - [`vfs`] — `FileId` interning and open-document overlays; open buffers
+//!   always win over disk and index.
+//! - [`analysis`] — the immutable, cheaply cloneable snapshot: per-file
+//!   [`analysis::FileAnalysis`], the cross-file maps ([`analysis::Xref`]),
+//!   the bibliography table, and cursor classification. Writes happen on the
+//!   main thread by structural sharing; readers clone and run on workers.
 //!
-//! Features this will serve: completion for ids and citation keys,
-//! go-to-definition across notes, stance-aware backlinks, and inline lint
-//! diagnostics from `morog-sema`.
+//! The main loop, protocol handlers, diagnostics publishing, and the
+//! embedded indexer build on these in the following layers of milestone M7.
+
+pub mod analysis;
+pub mod vfs;

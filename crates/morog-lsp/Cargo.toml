@@ -5,3 +5,10 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+imbl.workspace = true
+morg-parser.workspace = true
+morog-bib.workspace = true
+morog-sema.workspace = true
+
+[dev-dependencies]
+expect-test.workspace = true
