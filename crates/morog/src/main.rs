@@ -15,6 +15,7 @@ mod lsp;
 mod publish;
 mod query;
 mod research;
+mod tags;
 
 use std::process::ExitCode;
 
@@ -34,6 +35,7 @@ fn main() -> ExitCode {
         Command::Query { query, vault } => query::run(&query, vault, &cli.format),
         Command::Research { command } => research::run(command, &cli.format),
         Command::Graph(args) => graph::run(args, &cli.format),
+        Command::Tags { name, vault } => tags::run(&name, vault, &cli.format),
         Command::Lint { files, bib } => lint::run(files, &cli.format, &bib),
         Command::Lsp => lsp::run(),
         Command::Publish { command } => publish::run(command, &cli.format),

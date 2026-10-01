@@ -46,6 +46,20 @@ pub enum Command {
     },
     /// Emit the discourse graph as DOT (plan §7.1)
     Graph(GraphArgs),
+    /// Tabulate a custom tag's occurrences from the index (plan §10 T1)
+    ///
+    /// Lists every occurrence of the user-declared tag NAME — file, line,
+    /// one column per named capture group (in `TagTable` group order), and a
+    /// mismatch flag for arguments that did not match the declared
+    /// pattern/kind. Reads the existing index only (run `morog index`
+    /// first); the `[tags]` declaration comes from the usual config layers.
+    Tags {
+        /// The custom tag name, without the leading `#`
+        name: String,
+        /// Vault root directory the index belongs to (default: current directory)
+        #[arg(long, value_name = "DIR")]
+        vault: Option<PathBuf>,
+    },
     /// Lint STA notes (frontmatter, provenance, relations)
     Lint {
         /// Markdown files or directories to lint

@@ -41,8 +41,10 @@ fn cell_text(v: &Value) -> String {
     }
 }
 
-/// Columns padded to their widest cell, separated by two spaces.
-fn render_text(out: &QueryOutput) -> String {
+/// Columns padded to their widest cell, separated by two spaces. Shared
+/// with `morog tags`, which renders its occurrence table through the same
+/// shape.
+pub(crate) fn render_text(out: &QueryOutput) -> String {
     use std::fmt::Write as _;
 
     let mut table: Vec<Vec<String>> = vec![out.columns.clone()];

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
+use morg_parser::TagTable;
 use morog_bib::{BibStore, BibratStore};
 use morog_index::IndexStats;
 
@@ -44,7 +45,17 @@ pub fn run(
     }
     let bib = store.as_ref().map(|s| s as &dyn BibStore);
 
-    match morog_index::index_vault_with_bib(&vault, &db_path, full, bib) {
+    // Parse against the resolved `[tags]` table (plan §10 T1) so custom-tag
+    // facts land in `blocks.customs` and the cache is keyed on the table.
+    let tags = match crate::config::load(&vault) {
+        Ok(config) => config.tag_table(),
+        Err(message) => {
+            eprintln!("morog index: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match morog_index::index_vault_with_tags(&vault, &db_path, full, bib, &tags) {
         Ok(stats) => report(&vault, &stats, format),
         Err(e) => {
             eprintln!("morog index: {e}");
@@ -55,7 +66,7 @@ pub fn run(
     if !watch {
         return ExitCode::SUCCESS;
     }
-    if let Err(e) = watch_loop(&vault, &db_path, format, store.as_ref()) {
+    if let Err(e) = watch_loop(&vault, &db_path, format, store.as_ref(), &tags) {
         eprintln!("morog index: watch: {e}");
         return ExitCode::FAILURE;
     }
@@ -96,6 +107,7 @@ fn watch_loop(
     db_path: &Path,
     format: &str,
     store: Option<&BibratStore>,
+    tags: &TagTable,
 ) -> notify::Result<()> {
     use notify::{RecursiveMode, Watcher};
 
@@ -126,9 +138,10 @@ fn watch_loop(
         if !relevant {
             continue;
         }
-        // The bib snapshot from startup is reused; only the vault is watched.
+        // The bib and tag-table snapshots from startup are reused; only the
+        // vault is watched.
         let bib = store.map(|s| s as &dyn BibStore);
-        match morog_index::index_vault_with_bib(vault, db_path, false, bib) {
+        match morog_index::index_vault_with_tags(vault, db_path, false, bib, tags) {
             Ok(stats) if stats.changed == 0 && stats.deleted == 0 => {}
             Ok(stats) => report(vault, &stats, format),
             Err(e) => eprintln!("morog index: {e}"),
