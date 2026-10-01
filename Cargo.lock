@@ -340,6 +340,7 @@ name = "morog"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "morg-parser",
  "morog-bib",
  "morog-index",
  "morog-sema",

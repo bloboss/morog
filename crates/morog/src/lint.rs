@@ -1,0 +1,178 @@
+//! `morog lint` — walk a vault, run the file-level and vault-level STA
+//! lints (plan §2.5), and print diagnostics.
+
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use morog_sema::{Analysis, Diagnostic, LintConfig, Severity, VaultNote};
+
+/// Run the lint subcommand over the given paths (default: the current
+/// directory). Returns a failure exit code when any error-severity
+/// diagnostic fires.
+pub fn run(paths: Vec<PathBuf>, format: &str) -> ExitCode {
+    let roots = if paths.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        paths
+    };
+
+    let mut files = Vec::new();
+    for root in &roots {
+        if root.is_dir() {
+            collect_notes(root, &mut files);
+        } else {
+            files.push(root.clone());
+        }
+    }
+    files.sort();
+    files.dedup();
+
+    let config = LintConfig::default();
+    let mut diagnostics = Vec::new();
+    let mut analyses: Vec<(PathBuf, Analysis)> = Vec::with_capacity(files.len());
+
+    for path in files {
+        let source = match std::fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(err) => {
+                eprintln!("morog lint: cannot read {}: {err}", path.display());
+                continue;
+            }
+        };
+        let parsed = morg_parser::parse_document(&source);
+        let analysis = morog_sema::analyze_document(&source, &parsed.document);
+        diagnostics.extend(morog_sema::lint_file(&path, &analysis, &config, None));
+        analyses.push((path, analysis));
+    }
+
+    let notes: Vec<VaultNote<'_>> = analyses
+        .iter()
+        .map(|(path, analysis)| VaultNote {
+            path,
+            facts: &analysis.facts,
+        })
+        .collect();
+    diagnostics.extend(morog_sema::lint_vault(&notes));
+
+    diagnostics
+        .sort_by(|a, b| (&a.file, a.line_col(), a.code).cmp(&(&b.file, b.line_col(), b.code)));
+
+    match format {
+        "json" => print!("{}", render_json(&diagnostics)),
+        _ => print!("{}", render_text(&diagnostics, analyses.len())),
+    }
+
+    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// Recursively collect `*.md` / `*.morg` files, skipping dot-entries.
+fn collect_notes(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        eprintln!("morog lint: cannot read directory {}", dir.display());
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with('.'))
+        {
+            continue;
+        }
+        if path.is_dir() {
+            collect_notes(&path, out);
+        } else if path
+            .extension()
+            .is_some_and(|ext| ext == "md" || ext == "morg")
+        {
+            out.push(path);
+        }
+    }
+}
+
+fn render_text(diagnostics: &[Diagnostic], file_count: usize) -> String {
+    let mut out = String::new();
+    for d in diagnostics {
+        let (line, col) = d.line_col();
+        let _ = writeln!(
+            out,
+            "{}:{line}:{col}: {}: {}",
+            d.file.display(),
+            d.code.as_str(),
+            d.message
+        );
+    }
+    let errors = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .count();
+    let warnings = diagnostics.len() - errors;
+    let _ = writeln!(
+        out,
+        "{} file(s) checked: {errors} error(s), {warnings} warning(s)",
+        file_count
+    );
+    out
+}
+
+fn render_json(diagnostics: &[Diagnostic]) -> String {
+    let mut out = String::from("[");
+    for (i, d) in diagnostics.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let (line, col) = d.line_col();
+        let _ = write!(
+            out,
+            "\n  {{\"file\": \"{}\", \"line\": {line}, \"col\": {col}, \"code\": \"{}\", \"severity\": \"{}\", \"message\": \"{}\"}}",
+            json_escape(&d.file.display().to_string()),
+            d.code.as_str(),
+            d.severity.as_str(),
+            json_escape(&d.message)
+        );
+    }
+    if !diagnostics.is_empty() {
+        out.push('\n');
+    }
+    out.push_str("]\n");
+    out
+}
+
+/// Escape a string for inclusion in a JSON string literal.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::json_escape;
+
+    #[test]
+    fn json_escaping() {
+        assert_eq!(json_escape("plain"), "plain");
+        assert_eq!(json_escape("a\"b\\c"), "a\\\"b\\\\c");
+        assert_eq!(json_escape("line\nbreak"), "line\\nbreak");
+        assert_eq!(json_escape("caf\u{e9} \u{1f980}"), "caf\u{e9} \u{1f980}");
+        assert_eq!(json_escape("\u{1}"), "\\u0001");
+    }
+}
