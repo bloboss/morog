@@ -18,7 +18,11 @@ imbl = "7"
 lsp-server = "0.10"
 lsp-types = "0.95"
 minijinja = { version = "2", features = ["loader"] }
-morg-parser = { path = "../morg/crates/morg-parser" }
+# Pinned to morg main after the M1 merge (spans, cite, anchor, saphyr).
+# For local development against the sibling checkout, add to Cargo.toml:
+#   [patch."https://github.com/bloboss/morg"]
+#   morg-parser = { path = "../morg/crates/morg-parser" }
+morg-parser = { git = "https://github.com/bloboss/morg", rev = "151231a7a1d54fd332dacaa2faf423a1e85e8618" }
 notify = "8"
 petgraph = { version = "0.8", default-features = false, features = ["stable_graph"] }
 rayon = "1"

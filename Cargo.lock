@@ -796,6 +796,7 @@ dependencies = [
 [[package]]
 name = "morg-parser"
 version = "0.1.0"
+source = "git+https://github.com/bloboss/morg?rev=151231a7a1d54fd332dacaa2faf423a1e85e8618#151231a7a1d54fd332dacaa2faf423a1e85e8618"
 dependencies = [
  "chrono",
  "saphyr",

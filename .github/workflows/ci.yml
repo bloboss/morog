@@ -9,12 +9,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-# morog depends on morg-parser via a sibling path dependency
-# (../morg/crates/morg-parser), so every job checks out morg next to morog.
-
-defaults:
-  run:
-    working-directory: morog
+# morg-parser is a git dependency pinned by rev in Cargo.toml, so the
+# jobs need only this repository.
 
 jobs:
   check:
@@ -22,16 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          path: morog
-      - uses: actions/checkout@v6
-        with:
-          repository: bloboss/morg
-          path: morg
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: morog
       - run: cargo check --workspace
 
   test:
@@ -42,16 +30,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v6
-        with:
-          path: morog
-      - uses: actions/checkout@v6
-        with:
-          repository: bloboss/morg
-          path: morg
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: morog
       - run: cargo test --workspace
 
   clippy:
@@ -59,18 +39,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          path: morog
-      - uses: actions/checkout@v6
-        with:
-          repository: bloboss/morg
-          path: morg
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: morog
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   fmt:
@@ -78,8 +50,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          path: morog
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
