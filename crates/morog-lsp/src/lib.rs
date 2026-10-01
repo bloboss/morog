@@ -23,6 +23,7 @@ pub mod config;
 mod diagnostics;
 mod from_proto;
 mod handlers;
+mod indexer;
 pub mod main_loop;
 mod state;
 mod to_proto;

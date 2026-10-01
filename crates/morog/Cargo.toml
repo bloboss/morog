@@ -9,6 +9,7 @@ clap.workspace = true
 morg-parser.workspace = true
 morog-bib.workspace = true
 morog-index.workspace = true
+morog-lsp.workspace = true
 morog-sema.workspace = true
 notify.workspace = true
 petgraph.workspace = true

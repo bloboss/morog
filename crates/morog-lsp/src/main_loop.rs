@@ -44,8 +44,50 @@ pub fn run(connection: Connection) -> Result<(), Error> {
     });
     connection.initialize_finish(initialize_id, initialize_result)?;
 
-    let state = GlobalState::new(connection.sender.clone(), config, encoding);
+    let mut state = GlobalState::new(connection.sender.clone(), config, encoding);
+    cold_start(&mut state);
     main_loop(&connection, state)
+}
+
+/// Plan §5.4 steps 2–3: build the analysis from a read-only table scan of
+/// the index — no reparse — then start the embedded indexer, which
+/// reconciles disk against the index and streams deltas.
+fn cold_start(state: &mut GlobalState) {
+    let vault_root = state
+        .config
+        .vault_root
+        .canonicalize()
+        .unwrap_or_else(|_| state.config.vault_root.clone());
+    state.config.vault_root = vault_root.clone();
+
+    let db_path = morog_index::cache_db_path(&vault_root);
+    if let Ok(conn) = morog_index::schema::open_ro(&db_path) {
+        match (
+            morog_index::load_all_facts(&conn),
+            morog_index::load_bib_entries(&conn),
+        ) {
+            (Ok(files), Ok(bib)) => {
+                state.analysis.bib =
+                    std::sync::Arc::new(crate::analysis::BibIndex::from_entries(bib));
+                for (rel, facts) in files {
+                    state.set_indexed_file(
+                        &vault_root.join(rel),
+                        crate::analysis::FileAnalysis::from_facts(facts),
+                    );
+                }
+            }
+            (files, bib) => {
+                let err = files.err().or(bib.err()).expect("one side failed");
+                eprintln!("morog-lsp: cold start skipped: {err}");
+            }
+        }
+    }
+
+    state.indexer = Some(crate::indexer::spawn(
+        vault_root,
+        state.config.bibrat_root.clone(),
+        state.task_tx.clone(),
+    ));
 }
 
 /// Prefer `utf-8` (spans stay byte offsets end to end), fall back to the
@@ -87,6 +129,28 @@ fn server_capabilities(encoding: PositionEncoding) -> ServerCapabilities {
         workspace_symbol_provider: Some(lsp_types::OneOf::Left(true)),
         ..Default::default()
     }
+}
+
+/// Dynamically watch the note files (and the bibrat root, when known) —
+/// plan §5.4 step 4. Clients without the capability simply error the
+/// registration back, which we ignore.
+fn register_watchers(state: &mut GlobalState) {
+    let mut watchers = vec![serde_json::json!({ "globPattern": "**/*.{md,morg}" })];
+    if let Some(bibrat_root) = &state.config.bibrat_root {
+        watchers.push(serde_json::json!({
+            "globPattern": format!("{}/**", bibrat_root.display()),
+        }));
+    }
+    state.send_request(
+        "client/registerCapability",
+        serde_json::json!({
+            "registrations": [{
+                "id": "morog/watchers",
+                "method": "workspace/didChangeWatchedFiles",
+                "registerOptions": { "watchers": watchers },
+            }],
+        }),
+    );
 }
 
 enum Event {
@@ -218,6 +282,12 @@ fn on_request(state: &mut GlobalState, request: Request) {
 fn on_notification(state: &mut GlobalState, notification: Notification) {
     use lsp_types::notification as n;
     match notification.method.as_str() {
+        n::Initialized::METHOD => register_watchers(state),
+        n::DidChangeWatchedFiles::METHOD => {
+            if let Ok(params) = serde_json::from_value(notification.params) {
+                state.did_change_watched_files(params);
+            }
+        }
         n::DidOpenTextDocument::METHOD => {
             if let Ok(params) = serde_json::from_value(notification.params) {
                 state.did_open(params);

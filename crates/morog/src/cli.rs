@@ -53,6 +53,12 @@ pub enum Command {
         #[command(flatten)]
         bib: BibArgs,
     },
+    /// Run the language server over stdio (plan §5)
+    ///
+    /// The vault root and bibrat root come from the client's
+    /// initializationOptions (`vaultRoot`, `bibratRoot`), falling back to
+    /// the first workspace folder and bibrat auto-discovery.
+    Lsp,
 }
 
 /// The `morog research` subcommands (plan §7 M5): note creation from the

@@ -286,6 +286,66 @@ pub fn load_file_facts(conn: &Connection, file_id: i64) -> Result<FileFacts, Err
     })
 }
 
+/// Load every file's facts, keyed by vault-relative path — the LSP's
+/// cold start (plan §5.4): one table scan, no reparse.
+pub fn load_all_facts(conn: &Connection) -> Result<Vec<(String, FileFacts)>, Error> {
+    let files: Vec<(i64, String)> = conn
+        .prepare_cached("SELECT file_id, path FROM files ORDER BY file_id")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    files
+        .into_iter()
+        .map(|(file_id, path)| Ok((path, load_file_facts(conn, file_id)?)))
+        .collect()
+}
+
+/// Load one file's facts by its vault-relative path; `None` when the index
+/// has no row for it (e.g. just deleted).
+pub fn load_facts_for_path(conn: &Connection, rel_path: &str) -> Result<Option<FileFacts>, Error> {
+    let file_id: Option<i64> = conn
+        .prepare_cached("SELECT file_id FROM files WHERE path = ?1")?
+        .query_row([rel_path], |r| r.get(0))
+        .optional()?;
+    file_id.map(|id| load_file_facts(conn, id)).transpose()
+}
+
+/// Load the bibliography snapshot back out of `bib_entries` — the inverse
+/// of [`store_bib_entries`] up to the fields the table keeps (plan §4.2:
+/// key completion and resolution never touch the filesystem).
+pub fn load_bib_entries(conn: &Connection) -> Result<Vec<morog_bib::BibEntry>, Error> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT citekey, collection, dir, title, year, doi FROM bib_entries ORDER BY citekey",
+    )?;
+    let entries = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<i32>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(entries
+        .into_iter()
+        .map(|(citekey, collection, dir, title, year, doi)| {
+            let meta = (title.is_some() || year.is_some() || doi.is_some())
+                .then_some(morog_bib::BibMeta { title, year, doi });
+            morog_bib::BibEntry {
+                key: morog_bib::CiteKey::new(citekey),
+                collection: morog_bib::CollectionPath(collection),
+                also_in: Vec::new(),
+                dir: std::path::PathBuf::from(dir),
+                meta,
+                tags: Vec::new(),
+                warnings: Vec::new(),
+            }
+        })
+        .collect())
+}
+
 /// Delete every row belonging to `file_id`, including the `files` row.
 ///
 /// Explicit and ordered rather than FK-cascaded, so the `blocks` delete

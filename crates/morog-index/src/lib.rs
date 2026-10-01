@@ -16,7 +16,10 @@ pub mod store;
 pub use pipeline::{IndexStats, index_vault, index_vault_with_bib};
 pub use query::{QueryOutput, Value, run_query};
 pub use schema::SCHEMA_VERSION;
-pub use store::{delete_file_rows, load_file_facts, store_bib_entries, store_file_facts};
+pub use store::{
+    delete_file_rows, load_all_facts, load_bib_entries, load_facts_for_path, load_file_facts,
+    store_bib_entries, store_file_facts,
+};
 
 /// Everything that can go wrong while building or querying the index.
 #[derive(Debug)]

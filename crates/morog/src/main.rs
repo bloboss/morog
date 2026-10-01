@@ -10,6 +10,7 @@ mod graph;
 mod index;
 mod json;
 mod lint;
+mod lsp;
 mod query;
 mod research;
 
@@ -32,5 +33,6 @@ fn main() -> ExitCode {
         Command::Research { command } => research::run(command, &cli.format),
         Command::Graph(args) => graph::run(args, &cli.format),
         Command::Lint { files, bib } => lint::run(files, &cli.format, &bib),
+        Command::Lsp => lsp::run(),
     }
 }

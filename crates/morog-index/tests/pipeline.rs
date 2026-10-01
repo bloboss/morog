@@ -209,3 +209,48 @@ fn full_rebuild_is_atomic_over_existing_db() {
     assert_eq!(count(&db, "SELECT COUNT(*) FROM files"), 2);
     assert!(schema::open_ro(&db).is_ok());
 }
+
+#[test]
+fn cold_start_loaders_round_trip_the_whole_index() {
+    let tmp = TempDir::new("cold-start");
+    let vault = tmp.path().join("vault");
+    let db = tmp.path().join("cache/index.sqlite");
+    seed_vault(&vault);
+
+    let mut bib = morog_bib::FixtureStore::from_keys(["wright_leaf_2004"]);
+    morog_bib::BibStore::discover(&mut bib, &vault).unwrap();
+    morog_index::index_vault_with_bib(&vault, &db, true, Some(&bib)).unwrap();
+
+    let conn = schema::open_ro(&db).unwrap();
+
+    // load_all_facts sees every indexed file, and each entry equals the
+    // per-file load.
+    let all = morog_index::load_all_facts(&conn).unwrap();
+    let mut paths: Vec<&str> = all.iter().map(|(p, _)| p.as_str()).collect();
+    paths.sort_unstable();
+    assert_eq!(paths, ["arguments/a1.morg", "plain.md", "topics/sla.md"]);
+    for (path, facts) in &all {
+        let by_path = morog_index::load_facts_for_path(&conn, path)
+            .unwrap()
+            .expect("path is indexed");
+        assert_eq!(&by_path, facts, "{path}");
+    }
+    let sla = all
+        .iter()
+        .find(|(p, _)| p == "topics/sla.md")
+        .map(|(_, f)| f)
+        .unwrap();
+    assert_eq!(sla.note.id.as_ref().unwrap().as_str(), "sla");
+    assert_eq!(sla.blocks[0].anchor.as_deref(), Some("evidence-1"));
+
+    assert!(
+        morog_index::load_facts_for_path(&conn, "missing.md")
+            .unwrap()
+            .is_none()
+    );
+
+    // The bibliography snapshot comes back out of bib_entries.
+    let entries = morog_index::load_bib_entries(&conn).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].key.0, "wright_leaf_2004");
+}

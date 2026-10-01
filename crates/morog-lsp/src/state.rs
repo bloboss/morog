@@ -27,6 +27,8 @@ pub(crate) enum Task {
         response: Response,
         stale_guard: Option<(FileId, i32)>,
     },
+    /// Progress or facts from the embedded indexer (plan §5.4).
+    Index(crate::indexer::IndexEvent),
 }
 
 /// The read-only view a request handler computes against: an O(1) clone of
@@ -47,6 +49,10 @@ pub(crate) struct GlobalState {
     pending_diags: HashMap<FileId, Instant>,
     pub task_tx: Sender<Task>,
     pub task_rx: Receiver<Task>,
+    /// The embedded indexer, once spawned (plan §5.4 step 3).
+    pub indexer: Option<crate::indexer::IndexerHandle>,
+    /// Id source for server → client requests (progress, registrations).
+    next_request_id: i32,
 }
 
 impl GlobalState {
@@ -61,6 +67,8 @@ impl GlobalState {
             pending_diags: HashMap::new(),
             task_tx,
             task_rx,
+            indexer: None,
+            next_request_id: 0,
         }
     }
 
@@ -101,9 +109,27 @@ impl GlobalState {
     }
 
     pub fn did_save(&mut self, params: lsp_types::DidSaveTextDocumentParams) {
-        // The embedded indexer reconciles saved files into SQLite
-        // (plan §5.3); it arrives with the indexer layer.
-        let _ = params;
+        // The embedded indexer reconciles the saved file into SQLite and
+        // reports its post-save facts (plan §5.3).
+        if let (Some(path), Some(indexer)) = (
+            from_proto::abs_path(&params.text_document.uri),
+            &self.indexer,
+        ) {
+            indexer.notify_changed(path);
+        }
+    }
+
+    pub fn did_change_watched_files(&mut self, params: lsp_types::DidChangeWatchedFilesParams) {
+        let Some(indexer) = &self.indexer else {
+            return;
+        };
+        for change in params.changes {
+            if let Some(path) = from_proto::abs_path(&change.uri) {
+                // Deletions ride the same path: the pipeline purges the row
+                // and the facts load comes back empty.
+                indexer.notify_changed(path);
+            }
+        }
     }
 
     pub fn did_close(&mut self, params: lsp_types::DidCloseTextDocumentParams) {
@@ -146,6 +172,82 @@ impl GlobalState {
         for file in affected {
             self.schedule_diagnostics(file, deadline);
         }
+    }
+
+    /// Reparse every open buffer (e.g. after the bibliography table landed,
+    /// which changes the citekey lints).
+    pub fn reanalyze_open_files(&mut self) {
+        let open: Vec<FileId> = self.vfs.open_files().collect();
+        for file in open {
+            self.reanalyze_overlay(file, Instant::now());
+        }
+    }
+
+    /// Replace a file's analysis from indexer facts — only when no overlay
+    /// exists (open buffers win, plan §5.3).
+    pub fn set_indexed_file(&mut self, path: &Path, analysis: FileAnalysis) {
+        let file = self.vfs.intern(path);
+        if self.vfs.is_open(file) {
+            return;
+        }
+        let path = Arc::clone(self.vfs.path(file));
+        let touched = self.analysis.set_file(file, path, Arc::new(analysis));
+        self.analysis.generation += 1;
+        self.schedule_affected_open(&touched);
+    }
+
+    /// Drop a file deleted on disk — only when no overlay exists.
+    pub fn remove_indexed_file(&mut self, path: &Path) {
+        let Some(file) = self.vfs.get(path) else {
+            return;
+        };
+        if self.vfs.is_open(file) {
+            return;
+        }
+        let touched = self.analysis.remove_file(file);
+        self.analysis.generation += 1;
+        self.schedule_affected_open(&touched);
+    }
+
+    /// Debounce diagnostics for the open files affected by touched ids.
+    fn schedule_affected_open(&mut self, touched: &std::collections::BTreeSet<Arc<str>>) {
+        let deadline = Instant::now() + diagnostics::DEBOUNCE;
+        for affected in self.analysis.affected_files(touched) {
+            if self.vfs.is_open(affected) {
+                self.schedule_diagnostics(affected, deadline);
+            }
+        }
+    }
+
+    // ---- indexing progress (plan §5.4 — window/workDoneProgress) ----
+
+    const PROGRESS_TOKEN: &str = "morog/indexing";
+
+    pub fn index_progress_begin(&mut self) {
+        self.send_request(
+            "window/workDoneProgress/create",
+            serde_json::json!({ "token": Self::PROGRESS_TOKEN }),
+        );
+        self.send_notification::<lsp_types::notification::Progress>(lsp_types::ProgressParams {
+            token: lsp_types::NumberOrString::String(Self::PROGRESS_TOKEN.to_owned()),
+            value: lsp_types::ProgressParamsValue::WorkDone(lsp_types::WorkDoneProgress::Begin(
+                lsp_types::WorkDoneProgressBegin {
+                    title: "morog: indexing vault".to_owned(),
+                    ..Default::default()
+                },
+            )),
+        });
+    }
+
+    pub fn index_progress_end(&mut self, message: String) {
+        self.send_notification::<lsp_types::notification::Progress>(lsp_types::ProgressParams {
+            token: lsp_types::NumberOrString::String(Self::PROGRESS_TOKEN.to_owned()),
+            value: lsp_types::ProgressParamsValue::WorkDone(lsp_types::WorkDoneProgress::End(
+                lsp_types::WorkDoneProgressEnd {
+                    message: Some(message),
+                },
+            )),
+        });
     }
 
     // ---- diagnostics debounce (plan §5.3 step 6) ----
@@ -221,6 +323,18 @@ impl GlobalState {
         let _ = self.sender.send(Message::Response(response));
     }
 
+    /// Fire a server → client request whose response we don't wait for
+    /// (progress-token creation, capability registration).
+    pub fn send_request(&mut self, method: &str, params: serde_json::Value) {
+        self.next_request_id += 1;
+        let request = lsp_server::Request::new(
+            lsp_server::RequestId::from(format!("morog-lsp/{}", self.next_request_id)),
+            method.to_owned(),
+            params,
+        );
+        let _ = self.sender.send(Message::Request(request));
+    }
+
     /// Dispatch a request handler onto the rayon pool against a snapshot.
     ///
     /// `uri` names the request's primary document when it has one; its
@@ -274,6 +388,7 @@ impl GlobalState {
                     self.respond(response);
                 }
             }
+            Task::Index(event) => crate::indexer::apply_event(self, event),
         }
     }
 }

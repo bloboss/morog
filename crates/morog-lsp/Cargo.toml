@@ -11,6 +11,7 @@ lsp-server.workspace = true
 lsp-types.workspace = true
 morg-parser.workspace = true
 morog-bib.workspace = true
+morog-index.workspace = true
 morog-sema.workspace = true
 rayon.workspace = true
 serde.workspace = true
