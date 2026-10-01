@@ -1,17 +1,20 @@
 //! Cursor-context classification (plan §5.5).
 //!
 //! Every positional request (hover, goto, references, …) first classifies
-//! the offset it points at. L2 needs the navigation contexts — link targets,
-//! citations, the note's own id — plus a minimal frontmatter key/value
-//! split; the completion-oriented contexts (`RelationField`, `Tag`,
-//! `partial` tracking) arrive with L3.
+//! the offset it points at. Two classifiers live here:
 //!
-//! Classification works off the extracted facts (whose spans the index
-//! round-trips), falling back to the parse tree only for frontmatter
-//! key/value shapes — so it also works on cold-start facts for everything
-//! navigation needs.
+//! - [`classify`] — the navigation contexts (L2): link targets, citations,
+//!   the note's own id, anchor declarations. It works off the extracted
+//!   facts (whose spans the index round-trips), falling back to the parse
+//!   tree only for frontmatter key/value shapes — so it also works on
+//!   cold-start facts for everything navigation needs.
+//! - [`classify_completion`] — the completion contexts (L3), with
+//!   partial-prefix extraction. Completion runs mid-edit, when the facts and
+//!   even the YAML parse may lag the buffer, so this classifier reads the
+//!   line around the cursor instead of trusting extracted spans.
 
 use morg_parser::Span;
+use morog_sema::NoteKind;
 
 use crate::analysis::file::FileAnalysis;
 
@@ -112,6 +115,275 @@ pub fn classify(fa: &FileAnalysis, offset: usize) -> CursorContext {
 /// of a reference still counts, matching editor expectations.
 fn contains(span: Span, offset: usize) -> bool {
     span.start <= offset && offset <= span.end
+}
+
+// ---------------------------------------------------------------------------
+// Completion classification (L3)
+
+/// Which field of a `relations:` entry the cursor is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelField {
+    To,
+    Stance,
+    Op,
+}
+
+/// What completion should offer at a position (plan §5.5's
+/// completion-oriented contexts). `partial` is the prefix typed so far and
+/// `replace` its span — what a completion's text edit replaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompletionContext {
+    /// A top-level frontmatter key position.
+    FmKey {
+        kind: Option<NoteKind>,
+        partial: String,
+        replace: Span,
+    },
+    /// A top-level frontmatter value position.
+    FmValue {
+        kind: Option<NoteKind>,
+        key: String,
+        partial: String,
+        replace: Span,
+    },
+    /// Inside one field of a `relations:` entry (or a `related:` item,
+    /// which completes like `to:`).
+    RelationField {
+        field: RelField,
+        partial: String,
+        replace: Span,
+    },
+    /// Inside the target of an inline `[text](id:…)` link.
+    LinkTarget { partial: String, replace: Span },
+    /// Inside an inline `[@…]` citation key.
+    Cite { partial: String, replace: Span },
+    /// Inside a `#…` tag name.
+    Tag { partial: String, replace: Span },
+    /// Nothing to complete here.
+    None,
+}
+
+/// Classify `offset` (a UTF-8 byte offset) for completion.
+///
+/// Purely textual over the current line (plus the frontmatter bounds), so it
+/// stays correct mid-edit; `fa` contributes only the note's kind.
+pub fn classify_completion(text: &str, fa: &FileAnalysis, offset: usize) -> CompletionContext {
+    let mut offset = offset.min(text.len());
+    while offset > 0 && !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    let line_start = text[..offset].rfind('\n').map_or(0, |i| i + 1);
+    let prefix = &text[line_start..offset];
+
+    if in_frontmatter(text, offset) {
+        classify_frontmatter(text, fa, offset, line_start, prefix)
+    } else {
+        classify_body(text, offset, prefix)
+    }
+}
+
+/// Whether `offset` sits inside the frontmatter block. Textual (delimiter
+/// scan), so it holds even while the YAML mid-edit no longer parses.
+fn in_frontmatter(text: &str, offset: usize) -> bool {
+    if !text.starts_with("---\n") || offset < 4 {
+        return false;
+    }
+    match text[3..].find("\n---") {
+        // Inside iff at or before the newline that opens the closing line.
+        Some(close) => offset <= 3 + close,
+        None => false,
+    }
+}
+
+fn classify_frontmatter(
+    text: &str,
+    fa: &FileAnalysis,
+    offset: usize,
+    line_start: usize,
+    prefix: &str,
+) -> CompletionContext {
+    // A half-typed line breaks the YAML parse and with it the extracted
+    // kind, so fall back to reading the `kind:` line textually.
+    let kind = fa.facts.note.kind.or_else(|| textual_kind(text));
+    let indent_len = prefix.len() - prefix.trim_start().len();
+    let body = &prefix[indent_len..];
+    let body_start = line_start + indent_len;
+
+    if indent_len == 0 {
+        // A top-level `key: value` line (or a key still being typed).
+        let Some(colon) = body.find(':') else {
+            return CompletionContext::FmKey {
+                kind,
+                partial: body.to_owned(),
+                replace: span_of(text, body_start, offset),
+            };
+        };
+        let key = body[..colon].trim_end().to_owned();
+        let after = &body[colon + 1..];
+        if matches!(key.as_str(), "related" | "relations" | "aliases") {
+            // A flow list on the key's own line: complete the current item
+            // of `related:` (ids); `relations:` flow entries are classified
+            // by the field scan below, `aliases` items are free text.
+            if key == "related"
+                && let Some(open) = after.rfind('[')
+            {
+                let item = &after[open + 1..];
+                let sep = item.rfind(',').map_or(0, |i| i + 1);
+                let partial = item[sep..].trim_start();
+                return CompletionContext::RelationField {
+                    field: RelField::To,
+                    partial: partial.to_owned(),
+                    replace: span_of(text, offset - partial.len(), offset),
+                };
+            }
+            if key == "relations" {
+                return classify_relation_entry(text, offset, after);
+            }
+            return CompletionContext::None;
+        }
+        let partial = after.trim_start();
+        return CompletionContext::FmValue {
+            kind,
+            key,
+            partial: partial.to_owned(),
+            replace: span_of(text, offset - partial.len(), offset),
+        };
+    }
+
+    // An indented line: an entry of a block list — the owning top-level key
+    // decides what it completes as.
+    match owning_key(text, line_start).as_deref() {
+        Some("relations") => classify_relation_entry(text, offset, body),
+        Some("related") => {
+            let item = body.strip_prefix('-').map(str::trim_start).unwrap_or(body);
+            CompletionContext::RelationField {
+                field: RelField::To,
+                partial: item.to_owned(),
+                replace: span_of(text, offset - item.len(), offset),
+            }
+        }
+        _ => CompletionContext::None,
+    }
+}
+
+/// The note kind read straight off a `kind:` frontmatter line.
+fn textual_kind(text: &str) -> Option<NoteKind> {
+    let close = 3 + text.get(3..)?.find("\n---")?;
+    text[..close]
+        .lines()
+        .find_map(|line| line.strip_prefix("kind:"))
+        .and_then(|value| NoteKind::parse(value.trim()))
+}
+
+/// The nearest top-level (unindented) `key:` line above `line_start`.
+fn owning_key(text: &str, mut line_start: usize) -> Option<String> {
+    while line_start > 0 {
+        let prev_end = line_start - 1; // the \n ending the previous line
+        let prev_start = text[..prev_end].rfind('\n').map_or(0, |i| i + 1);
+        let line = &text[prev_start..prev_end];
+        if !line.starts_with([' ', '\t']) {
+            return line.split(':').next().map(|k| k.trim().to_owned());
+        }
+        line_start = prev_start;
+    }
+    None
+}
+
+/// Classify within one `- { to: …, stance: …, op: … }` entry: the nearest
+/// field key before the cursor wins, as long as the cursor is still inside
+/// that field's value.
+fn classify_relation_entry(text: &str, offset: usize, body: &str) -> CompletionContext {
+    let mut best: Option<(usize, RelField, usize)> = None;
+    for (name, field) in [
+        ("to", RelField::To),
+        ("stance", RelField::Stance),
+        ("op", RelField::Op),
+    ] {
+        let mut from = 0;
+        while let Some(found) = body[from..].find(name) {
+            let pos = from + found;
+            let before_ok =
+                pos == 0 || matches!(body.as_bytes()[pos - 1], b' ' | b'\t' | b'{' | b',' | b'-');
+            if before_ok && body[pos + name.len()..].starts_with(':') {
+                let value_rel = pos + name.len() + 1;
+                if best.is_none_or(|(p, ..)| pos > p) {
+                    best = Some((pos, field, value_rel));
+                }
+            }
+            from = pos + name.len();
+        }
+    }
+    let Some((_, field, value_rel)) = best else {
+        return CompletionContext::None;
+    };
+    let value = &body[value_rel..];
+    if value.contains(',') || value.contains('}') {
+        // Past this field: between entries, nothing to complete.
+        return CompletionContext::None;
+    }
+    let partial = value.trim_start();
+    CompletionContext::RelationField {
+        field,
+        partial: partial.to_owned(),
+        replace: span_of(text, offset - partial.len(), offset),
+    }
+}
+
+fn classify_body(text: &str, offset: usize, prefix: &str) -> CompletionContext {
+    enum Marker {
+        Cite,
+        Link,
+        Tag,
+    }
+    // The construct opening closest to the cursor wins.
+    let cite = prefix.rfind("[@").map(|i| (i, Marker::Cite, i + 2));
+    let link = prefix.rfind("(id:").map(|i| (i, Marker::Link, i + 4));
+    let tag = prefix
+        .rfind('#')
+        .filter(|&i| {
+            i == 0
+                || prefix[..i]
+                    .chars()
+                    .next_back()
+                    .is_some_and(char::is_whitespace)
+        })
+        .map(|i| (i, Marker::Tag, i + 1));
+
+    let best = [cite, link, tag]
+        .into_iter()
+        .flatten()
+        .max_by_key(|&(pos, ..)| pos);
+    let Some((_, marker, partial_rel)) = best else {
+        return CompletionContext::None;
+    };
+    let partial = &prefix[partial_rel..];
+    let replace = span_of(text, offset - partial.len(), offset);
+    let slug_char = |c: char| c.is_alphanumeric() || c == '-' || c == '_';
+    match marker {
+        Marker::Cite if partial.chars().all(slug_char) => CompletionContext::Cite {
+            partial: partial.to_owned(),
+            replace,
+        },
+        Marker::Link if partial.chars().all(|c| slug_char(c) || c == '#') => {
+            CompletionContext::LinkTarget {
+                partial: partial.to_owned(),
+                replace,
+            }
+        }
+        Marker::Tag if partial.chars().all(slug_char) => CompletionContext::Tag {
+            partial: partial.to_owned(),
+            replace,
+        },
+        _ => CompletionContext::None,
+    }
+}
+
+/// A span for `start..end`, with line/col derived from the text.
+fn span_of(text: &str, start: usize, end: usize) -> Span {
+    let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
+    let line = text[..start].matches('\n').count() as u32 + 1;
+    let col = (start - line_start) as u32 + 1;
+    Span::new(start, end, line, col)
 }
 
 #[cfg(test)]
@@ -271,6 +543,227 @@ mod tests {
             "---\nid: a\nkind: topic\n---\n\nPlain pro$0se here. #mine\n",
             expect![[r#"
                 Prose
+            "#]],
+        );
+    }
+
+    /// Classify for completion at the `$0` marker of a fixture.
+    fn check_completion(fixture: &str, expected: Expect) {
+        let offset = fixture.find("$0").expect("fixture has a $0 marker");
+        let text = fixture.replacen("$0", "", 1);
+        let fa = FileAnalysis::parse(
+            Path::new("/vault/fixture.md"),
+            text.as_str().into(),
+            &LintConfig::default(),
+            None,
+        );
+        expected.assert_debug_eq(&classify_completion(&text, &fa, offset));
+    }
+
+    #[test]
+    fn complete_fm_key_and_value() {
+        check_completion(
+            "---\nid: a\nkind: topic\nti$0\n---\n",
+            expect![[r#"
+                FmKey {
+                    kind: Some(
+                        Topic,
+                    ),
+                    partial: "ti",
+                    replace: Span {
+                        start: 22,
+                        end: 24,
+                        line: 4,
+                        col: 1,
+                    },
+                }
+            "#]],
+        );
+        check_completion(
+            "---\nid: a\nkind: to$0\n---\n",
+            expect![[r#"
+                FmValue {
+                    kind: None,
+                    key: "kind",
+                    partial: "to",
+                    replace: Span {
+                        start: 16,
+                        end: 18,
+                        line: 3,
+                        col: 7,
+                    },
+                }
+            "#]],
+        );
+        check_completion(
+            "---\nid: a\nkind: source\nstatus: $0\n---\n",
+            expect![[r#"
+                FmValue {
+                    kind: Some(
+                        Source,
+                    ),
+                    key: "status",
+                    partial: "",
+                    replace: Span {
+                        start: 31,
+                        end: 31,
+                        line: 4,
+                        col: 9,
+                    },
+                }
+            "#]],
+        );
+    }
+
+    #[test]
+    fn complete_relation_fields() {
+        check_completion(
+            "---\nid: a\nkind: argument\nthesis: \"t\"\nrelations:\n  - { to: sl$0 }\n---\n",
+            expect![[r#"
+                RelationField {
+                    field: To,
+                    partial: "sl",
+                    replace: Span {
+                        start: 58,
+                        end: 60,
+                        line: 6,
+                        col: 11,
+                    },
+                }
+            "#]],
+        );
+        check_completion(
+            "---\nid: a\nkind: argument\nthesis: \"t\"\nrelations:\n  - { to: sla, stance: su$0 }\n---\n",
+            expect![[r#"
+                RelationField {
+                    field: Stance,
+                    partial: "su",
+                    replace: Span {
+                        start: 71,
+                        end: 73,
+                        line: 6,
+                        col: 24,
+                    },
+                }
+            "#]],
+        );
+        check_completion(
+            "---\nid: a\nkind: argument\nthesis: \"t\"\nrelations:\n  - { to: sla, stance: supports, op: $0 }\n---\n",
+            expect![[r#"
+                RelationField {
+                    field: Op,
+                    partial: "",
+                    replace: Span {
+                        start: 85,
+                        end: 85,
+                        line: 6,
+                        col: 38,
+                    },
+                }
+            "#]],
+        );
+    }
+
+    #[test]
+    fn complete_related_items_as_targets() {
+        check_completion(
+            "---\nid: a\nkind: topic\nrelated: [lmr, sl$0]\n---\n",
+            expect![[r#"
+                RelationField {
+                    field: To,
+                    partial: "sl",
+                    replace: Span {
+                        start: 37,
+                        end: 39,
+                        line: 4,
+                        col: 16,
+                    },
+                }
+            "#]],
+        );
+        check_completion(
+            "---\nid: a\nkind: topic\nrelated:\n  - sl$0\n---\n",
+            expect![[r#"
+                RelationField {
+                    field: To,
+                    partial: "sl",
+                    replace: Span {
+                        start: 35,
+                        end: 37,
+                        line: 5,
+                        col: 5,
+                    },
+                }
+            "#]],
+        );
+    }
+
+    #[test]
+    fn complete_body_constructs() {
+        check_completion(
+            "---\nid: a\nkind: topic\n---\n\nCited [@wri$0\n",
+            expect![[r#"
+                Cite {
+                    partial: "wri",
+                    replace: Span {
+                        start: 35,
+                        end: 38,
+                        line: 6,
+                        col: 9,
+                    },
+                }
+            "#]],
+        );
+        check_completion(
+            "---\nid: a\nkind: topic\n---\n\nSee [sla](id:sla#e$0\n",
+            expect![[r#"
+                LinkTarget {
+                    partial: "sla#e",
+                    replace: Span {
+                        start: 40,
+                        end: 45,
+                        line: 6,
+                        col: 14,
+                    },
+                }
+            "#]],
+        );
+        check_completion(
+            "---\nid: a\nkind: topic\n---\n\nMy idea. #mi$0\n",
+            expect![[r#"
+                Tag {
+                    partial: "mi",
+                    replace: Span {
+                        start: 37,
+                        end: 39,
+                        line: 6,
+                        col: 11,
+                    },
+                }
+            "#]],
+        );
+    }
+
+    #[test]
+    fn complete_nothing_in_plain_prose() {
+        check_completion(
+            "---\nid: a\nkind: topic\n---\n\nPlain pro$0se. #mine\n",
+            expect![[r#"
+                None
+            "#]],
+        );
+        // A closed citation earlier in the line doesn't bleed through.
+        check_completion(
+            "---\nid: a\nkind: topic\n---\n\nCited [@w2004] and mo$0re\n",
+            expect![[r#"
+                None
+            "#]],
+        );
+        // sla#e1 in prose is not a tag ('#' not preceded by whitespace).
+        check_completion(
+            "---\nid: a\nkind: topic\n---\n\nsee sla#e$0\n",
+            expect![[r#"
+                None
             "#]],
         );
     }

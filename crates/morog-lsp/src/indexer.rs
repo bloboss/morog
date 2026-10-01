@@ -27,6 +27,8 @@ pub(crate) enum IndexEvent {
     Reloaded {
         files: Vec<(PathBuf, FileFacts)>,
         bib: Vec<morog_bib::BibEntry>,
+        /// The bibrat root `TAGS.yml` vocabulary (not persisted in SQLite).
+        tags: Vec<String>,
         summary: String,
     },
     /// One file re-indexed after a save or watched change; `None` facts
@@ -93,12 +95,14 @@ fn run(
         ),
         Err(e) => format!("index error: {e}"),
     };
+    let tags = bib.as_ref().map(BibStore::tags).unwrap_or_default();
     match load_everything(&db_path, &vault_root) {
         Ok((files, bib_entries)) => send(
             task_tx,
             IndexEvent::Reloaded {
                 files,
                 bib: bib_entries,
+                tags,
                 summary,
             },
         ),
@@ -107,6 +111,7 @@ fn run(
             IndexEvent::Reloaded {
                 files: Vec::new(),
                 bib: Vec::new(),
+                tags: Vec::new(),
                 summary: format!("index load error: {e}"),
             },
         ),
@@ -170,9 +175,11 @@ pub(crate) fn apply_event(state: &mut GlobalState, event: IndexEvent) {
         IndexEvent::Reloaded {
             files,
             bib,
+            tags,
             summary,
         } => {
             state.analysis.bib = Arc::new(BibIndex::from_entries(bib));
+            state.analysis.bib_tags = tags.into();
             for (path, facts) in files {
                 state.set_indexed_file(&path, FileAnalysis::from_facts(facts));
             }

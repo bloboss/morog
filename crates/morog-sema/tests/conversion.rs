@@ -285,3 +285,15 @@ fn multibyte_content_keeps_spans_exact() {
     // The non-ASCII id is carried through (and will fail the slug lint).
     assert_eq!(a.meta.id().unwrap().as_str(), "caf\u{e9}-note");
 }
+
+#[test]
+fn frontmatter_keys_cover_each_kind() {
+    use morog_sema::{NoteKind, frontmatter_keys};
+    let common = frontmatter_keys(None);
+    assert!(common.contains(&"id") && common.contains(&"kind") && common.contains(&"extra"));
+    assert!(frontmatter_keys(Some(NoteKind::Source)).contains(&"status"));
+    let topic = frontmatter_keys(Some(NoteKind::Topic));
+    assert!(topic.contains(&"related") && topic.contains(&"aliases") && !topic.contains(&"thesis"));
+    let arg = frontmatter_keys(Some(NoteKind::Argument));
+    assert!(arg.contains(&"relations") && arg.contains(&"thesis") && arg.contains(&"form"));
+}

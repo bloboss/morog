@@ -269,6 +269,21 @@ pub fn parse_note_meta(fm: Option<&Frontmatter>) -> (NoteMeta, Vec<MetaError>) {
     (meta, cx.errors)
 }
 
+/// The frontmatter keys valid for a note of `kind` (plan §2.1–2.2): the
+/// common keys plus the kind-specific ones, in schema order. With no kind
+/// (a plain note, or `kind:` not yet typed) only the common keys apply —
+/// they are what every STA note shares.
+pub fn frontmatter_keys(kind: Option<NoteKind>) -> Vec<&'static str> {
+    let mut keys = COMMON_KEYS.to_vec();
+    keys.extend(match kind {
+        Some(NoteKind::Source) => SOURCE_KEYS,
+        Some(NoteKind::Topic) => TOPIC_KEYS,
+        Some(NoteKind::Argument) => ARGUMENT_KEYS,
+        None => &[],
+    });
+    keys
+}
+
 /// Split a relation target into `(id, anchor)` at the first `#`.
 pub fn split_target(to: &str) -> (String, Option<String>) {
     match to.split_once('#') {

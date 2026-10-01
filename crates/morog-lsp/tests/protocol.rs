@@ -1,6 +1,6 @@
 //! Protocol tests over `lsp_server::Connection::memory()` (plan §5.7):
 //! full sessions covering lifecycle in both encodings, document sync,
-//! and debounced publishDiagnostics.
+//! debounced publishDiagnostics, and the L3/L4 request surface.
 
 mod support;
 
@@ -246,6 +246,81 @@ fn navigation_requests_over_open_documents() {
         .map(|s| s["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["argument arg", "topic sla"]);
+
+    client.shutdown();
+}
+
+/// Completion labels at a position, in response order.
+fn completion_labels(client: &mut Client, uri: &str, line: u32, character: u32) -> Vec<String> {
+    client
+        .request(
+            "textDocument/completion",
+            json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": character },
+            }),
+        )
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["label"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn completion_over_open_documents() {
+    let mut client = Client::start(&["utf-8"], json!({ "vaultRoot": "/vault" }));
+    let sla_uri = "file:///vault/sla.md";
+    let arg_uri = "file:///vault/arg.md";
+    client.open(
+        sla_uri,
+        1,
+        "---\nid: sla\nkind: topic\ntitle: \"Specific leaf area\"\n---\n\nEvidence [@w]. #anchor e1\n",
+    );
+    client.open(
+        arg_uri,
+        1,
+        "---\nid: arg\nkind: argument\nthesis: \"t\"\nrelations:\n  - { to: , stance: su }\n---\n",
+    );
+
+    // `to: |` offers topics and arguments (sources never appear).
+    let labels = completion_labels(&mut client, arg_uri, 5, 10);
+    assert_eq!(labels, ["arg", "sla"]);
+
+    // `stance: su|` narrows the closed stance vocabulary.
+    let labels = completion_labels(&mut client, arg_uri, 5, 22);
+    assert_eq!(labels, ["supports"]);
+
+    // The completion item carries a text edit replacing the typed partial.
+    let completion = client.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": arg_uri },
+            "position": { "line": 5, "character": 22 },
+        }),
+    );
+    let edit = &completion[0]["textEdit"];
+    assert_eq!(edit["newText"], "supports");
+    assert_eq!(edit["range"]["start"]["character"], 20);
+    assert_eq!(edit["range"]["end"]["character"], 22);
+
+    // `#m` in prose offers the tag vocabulary, `mine` first.
+    client.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": { "uri": sla_uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 6, "character": 0 },
+                    "end": { "line": 6, "character": 0 },
+                },
+                "text": "An idea. #m\n",
+            }],
+        }),
+    );
+    let labels = completion_labels(&mut client, sla_uri, 6, 11);
+    assert_eq!(labels[0], "mine");
+    assert!(labels.contains(&"media".to_owned()));
 
     client.shutdown();
 }

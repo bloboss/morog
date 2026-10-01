@@ -23,7 +23,7 @@ pub use facts::{
 pub use lint::{Diagnostic, LintCode, LintConfig, Severity, VaultNote, lint_file, lint_vault};
 pub use meta::{
     ArgumentMeta, Extra, MetaError, MetaErrorKind, NoteMeta, RelatedDecl, RelationDecl, SourceMeta,
-    TopicMeta, parse_note_meta, split_target,
+    TopicMeta, frontmatter_keys, parse_note_meta, split_target,
 };
 pub use types::{
     ArgumentForm, ArgumentStatus, BloomOp, CiteKey, NoteId, NoteKind, NoteUuid, RelationKind,

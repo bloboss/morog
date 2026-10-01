@@ -122,6 +122,11 @@ fn server_capabilities(encoding: PositionEncoding) -> ServerCapabilities {
                 ..Default::default()
             },
         )),
+        completion_provider: Some(lsp_types::CompletionOptions {
+            // `[@` citations, `id:` links, `#` tags, `key: ` values.
+            trigger_characters: Some(vec!["@".into(), ":".into(), "#".into(), "[".into()]),
+            ..Default::default()
+        }),
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         references_provider: Some(lsp_types::OneOf::Left(true)),
@@ -234,6 +239,13 @@ fn on_request(state: &mut GlobalState, request: Request) {
     }
 
     match request.method.as_str() {
+        r::Completion::METHOD => handle!(
+            r::Completion,
+            |p: &lsp_types::CompletionParams| Some(
+                p.text_document_position.text_document.uri.clone()
+            ),
+            handlers::completion::handle
+        ),
         r::HoverRequest::METHOD => handle!(
             r::HoverRequest,
             |p: &lsp_types::HoverParams| Some(

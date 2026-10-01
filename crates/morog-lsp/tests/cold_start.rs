@@ -125,6 +125,26 @@ fn cold_start_from_index_over_the_fixture_vault() {
     assert!(value.contains("**topic** `specific-leaf-area`"), "{value}");
     assert!(value.contains("SLA is projected"), "{value}");
 
+    // Completion works over the unopened argument too: the relation target
+    // partial resolves against the cold-start analysis, reading the file
+    // text lazily from disk.
+    let (line, character) = position_of(&arg_text, "specific-leaf-area#evidence-1");
+    let completion = client.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": uri(&arg_path) },
+            "position": { "line": line, "character": character + 4 },
+        }),
+    );
+    let labels: Vec<&str> = completion
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["label"].as_str().unwrap())
+        .collect();
+    // "spec" is a subsequence of both ids; sources never appear.
+    assert_eq!(labels, ["specific-leaf-area", "two-shape-classes"]);
+
     // Opening the broken argument yields the vault-level diagnostics
     // computed against cold-start facts.
     let broken_path = vault.join("arguments/broken-targets.md");

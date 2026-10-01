@@ -5,6 +5,7 @@
 //! parsed this session (open buffers included), and lazily from disk for
 //! facts-only cold-start entries — never a reparse.
 
+pub(crate) mod completion;
 pub(crate) mod document_symbol;
 pub(crate) mod goto_definition;
 pub(crate) mod hover;
@@ -90,6 +91,26 @@ pub(crate) fn file_location(snapshot: &Snapshot, file: FileId) -> Option<Locatio
 
 pub(crate) fn file_uri(snapshot: &Snapshot, file: FileId) -> Option<Url> {
     snapshot.analysis.path(file).and_then(|p| to_proto::url(p))
+}
+
+/// Case-insensitive subsequence match (`query` must already be lowercased)
+/// — the fuzzy matcher shared by workspace symbols and completion
+/// (plan §5.6: "matched fuzzily on id, title, and aliases").
+pub(crate) fn fuzzy_match(query: &str, candidate: &str) -> bool {
+    let mut chars = query.chars();
+    let mut needle = match chars.next() {
+        Some(c) => c,
+        None => return true,
+    };
+    for c in candidate.to_lowercase().chars() {
+        if c == needle {
+            match chars.next() {
+                Some(next) => needle = next,
+                None => return true,
+            }
+        }
+    }
+    false
 }
 
 /// The block of `facts` declaring `anchor`.
