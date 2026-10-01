@@ -16,7 +16,10 @@ use crate::Error;
 
 /// Bumped on any schema change; a mismatch triggers a full rebuild.
 /// v2 appended `notes.created` and `notes.extra` for the publish exporter.
-pub const SCHEMA_VERSION: i64 = 2;
+/// v3 appended `blocks.customs` (user-declared custom-tag occurrences as
+/// canonical JSON, plan §10 T1) and introduced the `tag_table_hash` meta
+/// key that keys the cache on the resolved tag table.
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// Schema v1. Tables and views per plan §3.3; columns past the planned set
 /// exist so `FileFacts` round-trips losslessly (plan §5.4):
@@ -34,6 +37,10 @@ pub const SCHEMA_VERSION: i64 = 2;
 /// - `notes.created`, `notes.extra` (v2) — the `created:` value and the
 ///   user-owned `extra:` map as JSON, so `morog publish` exposes frontmatter
 ///   to templates straight from the index (plan §6.2–6.3).
+/// - `blocks.customs` (v3) — the block's user-declared custom-tag
+///   occurrences (name, span-carrying fields, shape mismatch) as canonical
+///   JSON, mirroring the `notes.extra` approach; NULL when the block
+///   carries none. Feeds `morog tags` and the LSP without a reparse.
 const SCHEMA_SQL: &str = "
 CREATE TABLE meta      (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE files     (file_id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL,
@@ -55,6 +62,7 @@ CREATE TABLE blocks    (file_id INTEGER REFERENCES files ON DELETE CASCADE, idx 
                         anchor TEXT, unit TEXT CHECK (unit IN ('evidence','mine','none')),
                         start_byte INTEGER, end_byte INTEGER, line INTEGER, text TEXT,
                         col INTEGER, citable INTEGER NOT NULL DEFAULT 0,
+                        customs TEXT,
                         PRIMARY KEY (file_id, idx));
 CREATE TABLE relations (file_id INTEGER REFERENCES files ON DELETE CASCADE,
                         src_note TEXT, src_block INTEGER,

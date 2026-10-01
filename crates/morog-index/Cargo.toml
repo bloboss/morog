@@ -12,3 +12,5 @@ morog-sema.workspace = true
 rayon.workspace = true
 rusqlite.workspace = true
 morog-bib.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -5,12 +5,13 @@
 //! so every field of [`FileFacts`] must survive the trip. The property test
 //! in `tests/roundtrip.rs` enforces this over generated note shapes.
 
-use morg_parser::Span;
+use morg_parser::{CustomField, Span};
 use morog_sema::{
-    BlockFacts, BlockUnit, BloomOp, CiteRef, FileFacts, IdRef, NoteFacts, NoteId, RelationFacts,
-    RelationKind, Stance,
+    BlockFacts, BlockUnit, BloomOp, CiteRef, CustomTagFacts, FileFacts, IdRef, NoteFacts, NoteId,
+    RelationFacts, RelationKind, Stance,
 };
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 
 use crate::Error;
 
@@ -20,6 +21,105 @@ mod kind {
     pub const RELATED: &str = "related";
     pub const CITES: &str = "cites";
     pub const MENTIONS: &str = "mentions";
+}
+
+// ---------------------------------------------------------------------------
+// `blocks.customs` JSON (plan §10 T1)
+//
+// Custom-tag occurrences ride one canonical-JSON column per block, mirroring
+// the `notes.extra` approach: serde_json over fixed-order structs, so equal
+// facts always serialize to byte-equal text.
+// ---------------------------------------------------------------------------
+
+/// A span as stored in `blocks.customs`: `[start, end, line, col]`.
+#[derive(Serialize, Deserialize)]
+struct SpanRow(usize, usize, u32, u32);
+
+impl From<Span> for SpanRow {
+    fn from(span: Span) -> Self {
+        Self(span.start, span.end, span.line, span.col)
+    }
+}
+
+impl From<SpanRow> for Span {
+    fn from(row: SpanRow) -> Self {
+        Span::new(row.0, row.1, row.2, row.3)
+    }
+}
+
+/// One custom-tag occurrence row inside the JSON array.
+#[derive(Serialize, Deserialize)]
+struct CustomRow {
+    name: String,
+    mismatch: bool,
+    span: SpanRow,
+    fields: Vec<FieldRow>,
+}
+
+/// One extracted field of a custom tag.
+#[derive(Serialize, Deserialize)]
+struct FieldRow {
+    group: String,
+    value: String,
+    span: SpanRow,
+}
+
+/// Serialize a block's custom-tag occurrences; `None` when there are none,
+/// so untagged blocks keep a NULL column.
+fn customs_to_json(customs: &[CustomTagFacts]) -> Option<String> {
+    if customs.is_empty() {
+        return None;
+    }
+    let rows: Vec<CustomRow> = customs
+        .iter()
+        .map(|c| CustomRow {
+            name: c.name.clone(),
+            mismatch: c.shape_mismatch,
+            span: c.span.into(),
+            fields: c
+                .fields
+                .iter()
+                .map(|f| FieldRow {
+                    group: f.group.clone(),
+                    value: f.value.clone(),
+                    span: f.span.into(),
+                })
+                .collect(),
+        })
+        .collect();
+    Some(serde_json::to_string(&rows).expect("customs serialize"))
+}
+
+/// Parse one non-NULL `blocks.customs` cell — the crate-internal entry
+/// point behind [`crate::query::tag_occurrences`].
+pub(crate) fn parse_customs(json: &str) -> Result<Vec<CustomTagFacts>, Error> {
+    customs_from_json(Some(json))
+}
+
+/// The inverse of [`customs_to_json`]; `None` input means no occurrences.
+fn customs_from_json(json: Option<&str>) -> Result<Vec<CustomTagFacts>, Error> {
+    let Some(json) = json else {
+        return Ok(Vec::new());
+    };
+    let rows: Vec<CustomRow> = serde_json::from_str(json)
+        .map_err(|e| Error::Corrupt(format!("bad blocks.customs JSON: {e}")))?;
+    Ok(rows
+        .into_iter()
+        .map(|row| CustomTagFacts {
+            name: row.name,
+            fields: row
+                .fields
+                .into_iter()
+                .map(|f| CustomField {
+                    group: f.group,
+                    value: f.value,
+                    span: f.span.into(),
+                })
+                .collect(),
+            shape_mismatch: row.mismatch,
+            span: row.span.into(),
+        })
+        .collect())
 }
 
 /// Store one file's facts under an existing `files.file_id` row.
@@ -92,8 +192,8 @@ pub fn store_file_facts(
 
     let mut insert_block = conn.prepare_cached(
         "INSERT INTO blocks
-           (file_id, idx, anchor, unit, start_byte, end_byte, line, text, col, citable)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+           (file_id, idx, anchor, unit, start_byte, end_byte, line, text, col, citable, customs)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
     let mut insert_relation = conn.prepare_cached(
         "INSERT INTO relations
@@ -116,6 +216,7 @@ pub fn store_file_facts(
             text,
             span.col,
             block.citable,
+            customs_to_json(&block.customs),
         ])?;
         for cite in &block.cites {
             insert_relation.execute(params![
@@ -470,7 +571,7 @@ fn load_note_facts(conn: &Connection, file_id: i64) -> Result<NoteFacts, Error> 
 
 fn load_blocks(conn: &Connection, file_id: i64) -> Result<Vec<BlockFacts>, Error> {
     let mut stmt = conn.prepare_cached(
-        "SELECT idx, anchor, unit, start_byte, end_byte, line, col, citable
+        "SELECT idx, anchor, unit, start_byte, end_byte, line, col, citable, customs
          FROM blocks WHERE file_id = ?1 ORDER BY idx",
     )?;
     let blocks = stmt
@@ -481,12 +582,13 @@ fn load_blocks(conn: &Connection, file_id: i64) -> Result<Vec<BlockFacts>, Error
                 r.get::<_, String>(2)?,
                 row_span(r, 3)?,
                 r.get::<_, bool>(7)?,
+                r.get::<_, Option<String>>(8)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     blocks
         .into_iter()
-        .map(|(idx, anchor, unit, span, citable)| {
+        .map(|(idx, anchor, unit, span, citable, customs)| {
             let unit = match unit.as_str() {
                 "evidence" => BlockUnit::Evidence,
                 "mine" => BlockUnit::Mine,
@@ -499,7 +601,7 @@ fn load_blocks(conn: &Connection, file_id: i64) -> Result<Vec<BlockFacts>, Error
                 unit,
                 citable,
                 cites: Vec::new(),
-                customs: Vec::new(),
+                customs: customs_from_json(customs.as_deref())?,
                 span,
             })
         })

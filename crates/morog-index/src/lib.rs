@@ -13,8 +13,10 @@ pub mod query;
 pub mod schema;
 pub mod store;
 
-pub use pipeline::{IndexStats, index_vault, index_vault_with_bib};
-pub use query::{QueryOutput, Value, run_query};
+pub use pipeline::{
+    IndexStats, index_vault, index_vault_with_bib, index_vault_with_tags, tag_table_fingerprint,
+};
+pub use query::{QueryOutput, TagOccurrence, Value, run_query, tag_occurrences};
 pub use schema::SCHEMA_VERSION;
 pub use store::{
     delete_file_rows, load_all_facts, load_bib_entries, load_facts_for_path, load_file_facts,

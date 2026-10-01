@@ -853,6 +853,8 @@ dependencies = [
  "morog-sema",
  "rayon",
  "rusqlite",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

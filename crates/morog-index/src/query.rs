@@ -70,6 +70,60 @@ pub fn run_query(db_path: &Path, sql: &str) -> Result<QueryOutput, Error> {
     Ok(QueryOutput { columns, rows })
 }
 
+/// One occurrence of a user-declared custom tag, as read back from the
+/// `blocks.customs` column — the row shape behind `morog tags` (plan §10).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TagOccurrence {
+    /// Vault-relative file path.
+    pub path: String,
+    /// 1-based line of the tag.
+    pub line: u32,
+    /// Extracted `(group, value)` fields, in capture order. Empty on
+    /// mismatch.
+    pub fields: Vec<(String, String)>,
+    /// True when the argument did not match the declared pattern/kind.
+    pub shape_mismatch: bool,
+}
+
+/// Every occurrence of the custom tag `name`, straight from the index (no
+/// vault re-walk), ordered by file then position.
+pub fn tag_occurrences(db_path: &Path, name: &str) -> Result<Vec<TagOccurrence>, Error> {
+    if !db_path.exists() {
+        return Err(Error::MissingIndex(db_path.to_path_buf()));
+    }
+    let conn = schema::open_ro(db_path)?;
+    let mut stmt = conn.prepare(
+        "SELECT f.path, b.customs FROM blocks b
+         JOIN files f ON f.file_id = b.file_id
+         WHERE b.customs IS NOT NULL
+         ORDER BY f.path, b.idx",
+    )?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut out = Vec::new();
+    for (path, json) in rows {
+        for custom in crate::store::parse_customs(&json)? {
+            if custom.name != name {
+                continue;
+            }
+            out.push(TagOccurrence {
+                path: path.clone(),
+                line: custom.span.line,
+                fields: custom
+                    .fields
+                    .into_iter()
+                    .map(|f| (f.group, f.value))
+                    .collect(),
+                shape_mismatch: custom.shape_mismatch,
+            });
+        }
+    }
+    out.sort_by(|a, b| (&a.path, a.line).cmp(&(&b.path, b.line)));
+    Ok(out)
+}
+
 /// Whether `sql` contains a second statement after a top-level `;`.
 ///
 /// SQLite's prepare API silently stops at the first statement, which would

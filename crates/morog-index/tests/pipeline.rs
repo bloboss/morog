@@ -254,3 +254,89 @@ fn cold_start_loaders_round_trip_the_whole_index() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].key.0, "wright_leaf_2004");
 }
+
+#[test]
+fn tag_table_change_drops_and_rebuilds() {
+    use morg_parser::{TagDeclaration, TagTable};
+
+    let tmp = TempDir::new("tag-table");
+    let vault = tmp.path().join("vault");
+    let db = tmp.path().join("index.sqlite");
+    seed_vault(&vault);
+    write(
+        &vault,
+        "reading.md",
+        "---\nid: reading\nkind: topic\n---\n\nRead [@k]. #book \"Dune\" by Frank Herbert\n",
+    );
+
+    let book_table = TagTable::build([TagDeclaration {
+        name: "book".to_owned(),
+        pattern: Some(r#""(?<title>[^"]+)"\s+by\s+(?<author>.+)"#.to_owned()),
+        kind: None,
+    }])
+    .unwrap();
+
+    // Build under the empty table: #book stays an unknown tag.
+    morog_index::index_vault_with_bib(&vault, &db, false, None).unwrap();
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM blocks WHERE customs IS NOT NULL"),
+        0
+    );
+
+    // Same (empty) table: a plain warm rescan, nothing re-parsed.
+    let stats = morog_index::index_vault_with_bib(&vault, &db, false, None).unwrap();
+    assert_eq!((stats.changed, stats.indexed), (0, 0));
+
+    // A different resolved table turns the incremental run into a full
+    // drop-and-rebuild: every file is re-parsed under the new table.
+    let stats = morog_index::index_vault_with_tags(&vault, &db, false, None, &book_table).unwrap();
+    assert_eq!((stats.scanned, stats.indexed), (4, 4));
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM blocks WHERE customs IS NOT NULL"),
+        1
+    );
+
+    // The occurrences read straight from the index, no vault re-walk.
+    let hits = morog_index::tag_occurrences(&db, "book").unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].path, "reading.md");
+    assert_eq!(hits[0].line, 6);
+    assert!(!hits[0].shape_mismatch);
+    assert_eq!(
+        hits[0].fields,
+        [
+            ("title".to_owned(), "Dune".to_owned()),
+            ("author".to_owned(), "Frank Herbert".to_owned()),
+        ]
+    );
+    assert!(
+        morog_index::tag_occurrences(&db, "nope")
+            .unwrap()
+            .is_empty()
+    );
+
+    // Same table again (even though it was built elsewhere): stable, no
+    // rebuild — the fingerprint matches.
+    let same_table = TagTable::build([TagDeclaration {
+        name: "book".to_owned(),
+        pattern: Some(r#""(?<title>[^"]+)"\s+by\s+(?<author>.+)"#.to_owned()),
+        kind: None,
+    }])
+    .unwrap();
+    let stats = morog_index::index_vault_with_tags(&vault, &db, false, None, &same_table).unwrap();
+    assert_eq!((stats.changed, stats.indexed), (0, 0));
+
+    // Dropping the declarations rebuilds once more; the customs disappear.
+    let stats = morog_index::index_vault_with_bib(&vault, &db, false, None).unwrap();
+    assert_eq!(stats.indexed, 4);
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM blocks WHERE customs IS NOT NULL"),
+        0
+    );
+
+    // A missing index is reported, not built, by the occurrence reader.
+    assert!(matches!(
+        morog_index::tag_occurrences(&tmp.path().join("nope.sqlite"), "book"),
+        Err(Error::MissingIndex(_))
+    ));
+}

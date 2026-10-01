@@ -6,14 +6,33 @@
 //! kinds plus plain morg notes, anchors, `#mine` tags, cites with and
 //! without locators, typed relations with every stance and op, `related:`
 //! lists, aliases, `id:` links, headings/lists/code blocks, missing ids,
-//! and multi-byte text in every string position. Coverage flags assert the
-//! corpus really exercised each feature.
+//! custom tags (pattern fields, kind shorthand, shape mismatches — plan
+//! §10 T1), and multi-byte text in every string position. Coverage flags
+//! assert the corpus really exercised each feature.
 
-use morg_parser::parse_document;
+use morg_parser::{CustomArgKind, TagDeclaration, TagTable, parse_document_with};
 use morog_sema::FileFacts;
 use rusqlite::Connection;
 
 use morog_index::{load_file_facts, schema, store_file_facts};
+
+/// The user tag table the whole corpus parses against: one pattern tag with
+/// two named groups, one kind shorthand.
+fn test_table() -> TagTable {
+    TagTable::build([
+        TagDeclaration {
+            name: "book".to_owned(),
+            pattern: Some(r#""(?<title>[^"]+)"\s+by\s+(?<author>.+)"#.to_owned()),
+            kind: None,
+        },
+        TagDeclaration {
+            name: "met".to_owned(),
+            pattern: None,
+            kind: Some(CustomArgKind::Date),
+        },
+    ])
+    .unwrap()
+}
 
 // ---------------------------------------------------------------------------
 // splitmix64, as in morog-bench: deterministic without external crates.
@@ -88,6 +107,9 @@ struct Coverage {
     question_form: bool,
     created: bool,
     extra: bool,
+    custom_fields: bool,
+    custom_kind: bool,
+    custom_mismatch: bool,
 }
 
 impl Coverage {
@@ -123,6 +145,9 @@ impl Coverage {
         assert!(self.question_form, "no question-form argument");
         assert!(self.created, "no note with created:");
         assert!(self.extra, "no note with an extra: map");
+        assert!(self.custom_fields, "no custom tag with pattern fields");
+        assert!(self.custom_kind, "no custom tag with a kind shorthand");
+        assert!(self.custom_mismatch, "no custom tag with a shape mismatch");
     }
 }
 
@@ -240,6 +265,36 @@ fn gen_body(rng: &mut Rng, cov: &mut Coverage) -> String {
                 cov.code_block = true;
                 body.push_str("```rust\nlet x = 1; // not counted, not cited\n```\n");
             }
+            // A custom-tag paragraph (plan §10 T1). The tag goes last: the
+            // greedy argument capture would swallow anything after it.
+            3 | 4 => match rng.below(3) {
+                0 => {
+                    cov.custom_fields = true;
+                    cov.multibyte = true;
+                    body.push_str(&format!(
+                        "Read [@{}]. #book \"{} {}\" by {}\n",
+                        rng.pick(&CITE_KEYS),
+                        rng.pick(&MULTIBYTE_WORDS),
+                        rng.pick(&ASCII_WORDS),
+                        rng.pick(&ASCII_WORDS),
+                    ));
+                }
+                1 => {
+                    cov.custom_mismatch = true;
+                    body.push_str(&format!(
+                        "Skimmed [@{}]. #book untitled scrawl\n",
+                        rng.pick(&CITE_KEYS),
+                    ));
+                }
+                _ => {
+                    cov.custom_kind = true;
+                    body.push_str(&format!(
+                        "Met [@{}]. #met 2026-{:02}-07\n",
+                        rng.pick(&CITE_KEYS),
+                        1 + rng.below(12),
+                    ));
+                }
+            },
             _ => body.push_str(&gen_paragraph(rng, i, cov)),
         }
         body.push('\n');
@@ -389,7 +444,7 @@ fn gen_note(rng: &mut Rng, i: usize, cov: &mut Coverage) -> String {
 // ---------------------------------------------------------------------------
 
 fn extract(source: &str) -> FileFacts {
-    let parsed = parse_document(source);
+    let parsed = parse_document_with(source, &test_table());
     morog_sema::analyze_document(&parsed.document).facts
 }
 
@@ -450,6 +505,12 @@ fn facts_round_trip_edge_cases() {
         "---\nkind: topic\nid: dup-anchors\n---\n\nOne [@a]. #anchor same\n\nTwo [@b]. #anchor same\n",
         // Every block shape in one note.
         "---\nkind: topic\nid: shapes\n---\n\n# Heading\n\nPara [@k, p. 1] and [link](id:t#a). #anchor p1\n\n- item one [@k2]\n- item two #mine\n\n```rust\nfn ignored() {}\n```\n\n> callout-ish quote block\n",
+        // Custom tags (plan §10 T1): multi-byte field values, a kind
+        // shorthand (canonical value differs from the raw argument), a
+        // mismatch, and a declared tag with no argument at all.
+        "---\nkind: topic\nid: custom-tags\n---\n\nRead [@k]. #book \"日本語の本 🦀\" by café-author\n\nMet [@k]. #met 2026-03-14T09:30\n\nBad [@k]. #book untitled scrawl\n\nBare [@k]. #book\n",
+        // A custom tag inside a list item.
+        "---\nkind: topic\nid: custom-list\n---\n\n- bullet read [@k]. #book \"Dune\" by Herbert\n",
     ];
 
     let conn = Connection::open_in_memory().unwrap();
