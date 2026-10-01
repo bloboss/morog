@@ -41,6 +41,8 @@ pub struct IndexStats {
     pub indexed: usize,
     /// Rows purged for files no longer on disk.
     pub deleted: usize,
+    /// Bibliography entries written to `bib_entries` (0 without a store).
+    pub bib_entries: usize,
     /// Wall time of the whole run.
     pub wall: Duration,
 }
@@ -84,27 +86,58 @@ struct FileMsg {
     facts: morog_sema::FileFacts,
 }
 
-/// Index `vault_root` into the database at `db_path`.
+/// Index `vault_root` into the database at `db_path`, with no bibliography
+/// (the `bib_entries` table is cleared). See [`index_vault_with_bib`].
 pub fn index_vault(vault_root: &Path, db_path: &Path, full: bool) -> Result<IndexStats, Error> {
+    index_vault_with_bib(vault_root, db_path, full, None)
+}
+
+/// Index `vault_root` into the database at `db_path`.
+///
+/// When `bib` is supplied, its entries replace the `bib_entries` table in
+/// the same run (plan §4.2 — key completion and `v_dangling` never touch
+/// the filesystem). `None` clears the table, keeping the index a pure
+/// function of its inputs.
+pub fn index_vault_with_bib(
+    vault_root: &Path,
+    db_path: &Path,
+    full: bool,
+    bib: Option<&dyn morog_bib::BibStore>,
+) -> Result<IndexStats, Error> {
     let t0 = Instant::now();
     let vault = vault_root.canonicalize()?;
+    let bib_entries = bib.map(|store| store.entries()).unwrap_or_default();
 
     let mut stats = if full {
-        index_full(&vault, db_path)?
+        index_full(&vault, db_path, &bib_entries)?
     } else {
         let (conn, _fresh) = schema::open_rw(db_path)?;
         let existing = load_existing(&conn)?;
-        let (stats, conn) = run_pipeline(conn, &vault, existing)?;
+        let (stats, mut conn) = run_pipeline(conn, &vault, existing)?;
+        write_bib(&mut conn, &bib_entries)?;
         drop(conn);
         stats
     };
 
+    stats.bib_entries = bib_entries.len();
     stats.wall = t0.elapsed();
     Ok(stats)
 }
 
+/// Replace `bib_entries` in one transaction.
+fn write_bib(conn: &mut Connection, entries: &[&morog_bib::BibEntry]) -> Result<(), Error> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    crate::store::store_bib_entries(&tx, entries)?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Full rebuild into `<db>.tmp`, then rename over the live file.
-fn index_full(vault: &Path, db_path: &Path) -> Result<IndexStats, Error> {
+fn index_full(
+    vault: &Path,
+    db_path: &Path,
+    bib_entries: &[&morog_bib::BibEntry],
+) -> Result<IndexStats, Error> {
     let tmp = tmp_path(db_path);
     schema::remove_db(&tmp)?;
     if let Some(dir) = tmp.parent() {
@@ -113,7 +146,8 @@ fn index_full(vault: &Path, db_path: &Path) -> Result<IndexStats, Error> {
     let conn = Connection::open(&tmp)?;
     schema::create_schema_bulk(&conn)?;
 
-    let (stats, conn) = run_pipeline(conn, vault, HashMap::new())?;
+    let (stats, mut conn) = run_pipeline(conn, vault, HashMap::new())?;
+    write_bib(&mut conn, bib_entries)?;
     schema::finish_bulk(&conn)?;
     drop(conn);
 
@@ -208,6 +242,7 @@ fn run_pipeline(
             changed,
             indexed,
             deleted,
+            bib_entries: 0,
             wall: Duration::ZERO,
         },
         conn,

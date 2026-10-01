@@ -304,6 +304,32 @@ pub fn delete_file_rows(conn: &Connection, file_id: i64) -> Result<(), Error> {
     Ok(())
 }
 
+/// Replace the `bib_entries` table with the given bibliography snapshot.
+///
+/// The table is always rewritten in full — the bibliography is small
+/// (plan §4) and the index is a disposable cache, so the row set is a pure
+/// function of the store that was (or was not) supplied. Runs inside the
+/// caller's transaction.
+pub fn store_bib_entries(conn: &Connection, entries: &[&morog_bib::BibEntry]) -> Result<(), Error> {
+    conn.execute("DELETE FROM bib_entries", [])?;
+    let mut stmt = conn.prepare_cached(
+        "INSERT OR REPLACE INTO bib_entries (citekey, collection, dir, title, year, doi)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    for entry in entries {
+        let meta = entry.meta.as_ref();
+        stmt.execute(params![
+            entry.key.0,
+            entry.collection.0,
+            entry.dir.display().to_string(),
+            meta.and_then(|m| m.title.as_deref()),
+            meta.and_then(|m| m.year),
+            meta.and_then(|m| m.doi.as_deref()),
+        ])?;
+    }
+    Ok(())
+}
+
 fn load_note_facts(conn: &Connection, file_id: i64) -> Result<NoteFacts, Error> {
     type NoteRow = (
         Option<String>,

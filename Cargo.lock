@@ -553,6 +553,7 @@ dependencies = [
  "blake3",
  "ignore",
  "morg-parser",
+ "morog-bib",
  "morog-sema",
  "rayon",
  "rusqlite",
