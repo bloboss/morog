@@ -78,8 +78,8 @@ pub struct Analysis {
     /// The bibliography table (plan §4.2).
     pub bib: Arc<BibIndex>,
     /// The bibrat root `TAGS.yml` vocabulary (plan §4.1 B6), for tag
-    /// completion. Streamed by the indexer's reconcile — it is not persisted
-    /// in SQLite, so it stays empty between cold start and first reconcile.
+    /// completion. Not persisted in SQLite: the cold start reads it straight
+    /// off the store root, and every indexer reconcile streams it afresh.
     pub bib_tags: Arc<[String]>,
     /// Bumped by the main thread on every write; stale readers compare it.
     pub generation: u64,

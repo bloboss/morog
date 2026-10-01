@@ -77,45 +77,23 @@ fn run(
 ) {
     let db_path = morog_index::cache_db_path(&vault_root);
 
-    // bibrat is read once per reconcile; discovery failure just means the
+    // The bibrat paths whose watched-files events mean "re-walk the store"
+    // rather than "re-index a note" (plan §5.4). Canonicalized so prefix
+    // checks line up with client file URIs.
+    let watch = crate::config::bib_watch(bibrat_root.as_deref()).map(|mut watch| {
+        if let Ok(canonical) = watch.root.canonicalize() {
+            watch.root = canonical;
+        }
+        watch
+    });
+
+    // bibrat is re-walked per reconcile; discovery failure just means the
     // bibliography-backed behavior is skipped (plan §4).
-    let bib = match &bibrat_root {
-        Some(root) => morog_bib::BibratStore::open(root.clone()).ok(),
-        None => morog_bib::BibratStore::discover_default().unwrap_or_default(),
-    };
-    let bib_store: Option<&dyn BibStore> = bib.as_ref().map(|b| b as &dyn BibStore);
+    let mut bib = open_store(bibrat_root.as_deref());
 
     // Startup reconcile: stat-compare the disk against the index, then
     // stream the post-reconcile state back (plan §5.4 step 3).
-    send(task_tx, IndexEvent::Begin);
-    let summary = match morog_index::index_vault_with_bib(&vault_root, &db_path, false, bib_store) {
-        Ok(stats) => format!(
-            "indexed {} of {} files in {:.1?}",
-            stats.indexed, stats.scanned, stats.wall
-        ),
-        Err(e) => format!("index error: {e}"),
-    };
-    let tags = bib.as_ref().map(BibStore::tags).unwrap_or_default();
-    match load_everything(&db_path, &vault_root) {
-        Ok((files, bib_entries)) => send(
-            task_tx,
-            IndexEvent::Reloaded {
-                files,
-                bib: bib_entries,
-                tags,
-                summary,
-            },
-        ),
-        Err(e) => send(
-            task_tx,
-            IndexEvent::Reloaded {
-                files: Vec::new(),
-                bib: Vec::new(),
-                tags: Vec::new(),
-                summary: format!("index load error: {e}"),
-            },
-        ),
-    }
+    reconcile(&vault_root, &db_path, bib.as_ref(), task_tx);
 
     // Save / watched-change loop: coalesce bursts, re-run the incremental
     // pipeline (it only re-reads files whose stat changed), then report the
@@ -126,6 +104,23 @@ fn run(
         while let Ok(more) = rx.recv_deadline(settle) {
             touched.push(more);
         }
+
+        // A bibrat change (entry dirs, `citation.bib`, `TAGS.yml`, the
+        // config) invalidates the whole bibliography: re-open the store (a
+        // cheap walk) and run a full reconcile, which rewrites `bib_entries`
+        // on this thread — the sole SQLite writer — and streams the fresh
+        // table and tag vocabulary back for `Analysis.bib` / `bib_tags`.
+        // The reload also covers any vault files in the same burst.
+        if touched
+            .iter()
+            .any(|path| watch.as_ref().is_some_and(|watch| watch.contains(path)))
+        {
+            bib = open_store(bibrat_root.as_deref());
+            reconcile(&vault_root, &db_path, bib.as_ref(), task_tx);
+            continue;
+        }
+
+        let bib_store: Option<&dyn BibStore> = bib.as_ref().map(|b| b as &dyn BibStore);
         if let Err(e) = morog_index::index_vault_with_bib(&vault_root, &db_path, false, bib_store) {
             eprintln!("morog-lsp: indexer: {e}");
             continue;
@@ -150,6 +145,56 @@ fn run(
                 },
             );
         }
+    }
+}
+
+/// Open (or re-open) the bibliography store: an explicit root, or bibrat's
+/// own discovery. `None` when there is no store to read.
+fn open_store(bibrat_root: Option<&Path>) -> Option<morog_bib::BibratStore> {
+    match bibrat_root {
+        Some(root) => morog_bib::BibratStore::open(root.to_path_buf()).ok(),
+        None => morog_bib::BibratStore::discover_default().unwrap_or_default(),
+    }
+}
+
+/// One full reconcile: index the vault (writing `bib_entries` alongside),
+/// then stream the post-reconcile state back as [`IndexEvent::Reloaded`].
+/// Used at startup and after every bibrat change.
+fn reconcile(
+    vault_root: &Path,
+    db_path: &Path,
+    bib: Option<&morog_bib::BibratStore>,
+    task_tx: &Sender<Task>,
+) {
+    let bib_store: Option<&dyn BibStore> = bib.map(|b| b as &dyn BibStore);
+    send(task_tx, IndexEvent::Begin);
+    let summary = match morog_index::index_vault_with_bib(vault_root, db_path, false, bib_store) {
+        Ok(stats) => format!(
+            "indexed {} of {} files in {:.1?}",
+            stats.indexed, stats.scanned, stats.wall
+        ),
+        Err(e) => format!("index error: {e}"),
+    };
+    let tags = bib.map(BibStore::tags).unwrap_or_default();
+    match load_everything(db_path, vault_root) {
+        Ok((files, bib_entries)) => send(
+            task_tx,
+            IndexEvent::Reloaded {
+                files,
+                bib: bib_entries,
+                tags,
+                summary,
+            },
+        ),
+        Err(e) => send(
+            task_tx,
+            IndexEvent::Reloaded {
+                files: Vec::new(),
+                bib: Vec::new(),
+                tags: Vec::new(),
+                summary: format!("index load error: {e}"),
+            },
+        ),
     }
 }
 

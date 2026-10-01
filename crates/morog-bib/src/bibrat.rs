@@ -419,8 +419,10 @@ impl BibratConfig {
     }
 }
 
-/// `$BIBRAT_CONFIG`, else `<config home>/bibrat/config.toml`.
-fn config_path() -> Option<PathBuf> {
+/// The bibrat config file bibrat itself would read: `$BIBRAT_CONFIG`, else
+/// `<config home>/bibrat/config.toml`. The file need not exist. Public so
+/// the LSP can watch it for `data_dir` changes (plan §5.4).
+pub fn config_path() -> Option<PathBuf> {
     if let Some(path) = env_path("BIBRAT_CONFIG") {
         return Some(path);
     }
@@ -473,6 +475,16 @@ fn expand_tilde(path: &str) -> PathBuf {
 // ---------------------------------------------------------------------------
 // TAGS.yml
 // ---------------------------------------------------------------------------
+
+/// Read the root `TAGS.yml` vocabulary of a bibrat data directory without
+/// walking the store. The LSP cold start uses this so tag completion works
+/// before the first indexer reconcile streams the full store (plan §5.4);
+/// a missing or unreadable file is simply an empty vocabulary.
+pub fn load_root_tags(root: &Path) -> Vec<String> {
+    std::fs::read_to_string(root.join(TAGS_FILE))
+        .map(|src| parse_tags_yml(&src))
+        .unwrap_or_default()
+}
 
 /// Extract tag names from a bibrat `TAGS.yml`.
 ///

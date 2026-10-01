@@ -83,6 +83,14 @@ fn cold_start(state: &mut GlobalState) {
         }
     }
 
+    // Cold tags (plan §4.1 B6): the `TAGS.yml` vocabulary is not persisted
+    // in SQLite, so read it straight off the store root — tag completion
+    // works from the first keystroke instead of waiting for the first
+    // indexer reconcile to stream it.
+    if let Some(watch) = state.config.bib_watch() {
+        state.analysis.bib_tags = morog_bib::load_root_tags(&watch.root).into();
+    }
+
     state.indexer = Some(crate::indexer::spawn(
         vault_root,
         state.config.bibrat_root.clone(),
@@ -157,15 +165,36 @@ fn server_capabilities(encoding: PositionEncoding) -> ServerCapabilities {
     }
 }
 
-/// Dynamically watch the note files (and the bibrat root, when known) —
-/// plan §5.4 step 4. Clients without the capability simply error the
-/// registration back, which we ignore.
+/// Dynamically watch the note files and the bibrat store — plan §5.4 step
+/// 4. The bibrat data directory (and its `config.toml`) usually lives
+/// outside the workspace folder, so those watchers use a `RelativePattern`
+/// with an absolute `baseUri` when the client supports it, else an
+/// absolute-path glob string — the best a plain pattern can do.
+///
+/// Fallback: clients without dynamic watchers error the registration back
+/// (ignored), and clients that silently refuse to watch outside the
+/// workspace never send bibrat events. Either way the bibliography and tag
+/// vocabulary still load at cold start and refresh on every reconcile;
+/// they just stop reacting to external bibrat edits live. No periodic
+/// refresh is attempted by design.
 fn register_watchers(state: &mut GlobalState) {
     let mut watchers = vec![serde_json::json!({ "globPattern": "**/*.{md,morg}" })];
-    if let Some(bibrat_root) = &state.config.bibrat_root {
-        watchers.push(serde_json::json!({
-            "globPattern": format!("{}/**", bibrat_root.display()),
-        }));
+    if let Some(watch) = state.config.bib_watch() {
+        let relative = state.config.relative_pattern_support;
+        let mut push = |base: &std::path::Path, pattern: &str| {
+            let glob = relative
+                .then(|| lsp_types::Url::from_file_path(base).ok())
+                .flatten()
+                .map(|uri| serde_json::json!({ "baseUri": uri, "pattern": pattern }))
+                .unwrap_or_else(|| serde_json::json!(format!("{}/{pattern}", base.display())));
+            watchers.push(serde_json::json!({ "globPattern": glob }));
+        };
+        push(&watch.root, "**");
+        if let Some(config) = &watch.config
+            && let (Some(dir), Some(name)) = (config.parent(), config.file_name())
+        {
+            push(dir, &name.to_string_lossy());
+        }
     }
     state.send_request(
         "client/registerCapability",

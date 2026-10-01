@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 mod bibrat;
 
-pub use bibrat::{BibratStore, resolve_data_dir};
+pub use bibrat::{BibratStore, config_path, load_root_tags, resolve_data_dir};
 
 /// A citation key as it appears in notes, e.g. `shabanovSTA`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
