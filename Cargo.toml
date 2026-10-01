@@ -12,6 +12,7 @@ blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 morg-parser = { path = "../morg/crates/morg-parser" }
 rusqlite = { version = "0.32", features = ["bundled"] }
+uuid = "1"
 
 morog-bib = { path = "crates/morog-bib" }
 morog-index = { path = "crates/morog-index" }

@@ -5,6 +5,6 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
-
-[dev-dependencies]
 morg-parser.workspace = true
+morog-bib.workspace = true
+uuid.workspace = true
