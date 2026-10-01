@@ -249,7 +249,9 @@ fn cite_items(snapshot: &Snapshot, partial: &str, range: Range) -> Vec<Completio
 }
 
 /// Tag names: `mine` and `anchor` first (the STA tags), then the remaining
-/// morg keywords, then the bibrat `TAGS.yml` vocabulary (plan §5.6).
+/// morg keywords, then the user-declared `[tags]` names (plan §10 T1 —
+/// custom tags join the keyword set), then the bibrat `TAGS.yml` vocabulary
+/// (plan §5.6).
 fn tag_items(snapshot: &Snapshot, partial: &str, range: Range) -> Vec<CompletionItem> {
     let query = partial.to_lowercase();
     let mut seen = BTreeSet::new();
@@ -259,6 +261,9 @@ fn tag_items(snapshot: &Snapshot, partial: &str, range: Range) -> Vec<Completion
             .iter()
             .map(|keyword| keyword.as_str()),
     );
+    let mut custom: Vec<&str> = snapshot.analysis.tag_table.names().collect();
+    custom.sort_unstable();
+    names.extend(custom);
     names.extend(snapshot.analysis.bib_tags.iter().map(String::as_str));
     names
         .into_iter()
@@ -508,6 +513,26 @@ mod tests {
         assert!(labels.contains(&"todo") && labels.contains(&"deadline"));
         assert_eq!(*labels.last().unwrap(), "plastics");
         assert_eq!(labels.iter().filter(|l| **l == "mine").count(), 1);
+    }
+
+    #[test]
+    fn tags_offer_user_declared_custom_names() {
+        // A `[tags]` declaration joins the keyword set (plan §10 T1).
+        let table = morg_parser::TagTable::build([morg_parser::TagDeclaration {
+            name: "book".to_owned(),
+            pattern: Some(r#""(?<title>[^"]+)"\s+by\s+(?<author>.+)"#.to_owned()),
+            kind: None,
+        }])
+        .unwrap();
+        let (snap, position) = crate::handlers::test_support::snapshot_with_tags(
+            &[(
+                "/v/new.md",
+                "---\nid: new\nkind: topic\n---\n\nRead. #bo$0\n",
+            )],
+            &[],
+            table,
+        );
+        expect!["Keyword book -> 5:7..5:9 `book`"].assert_eq(&run(&snap, position));
     }
 
     #[test]

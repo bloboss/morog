@@ -147,6 +147,7 @@ mod tests {
             text.into(),
             &LintConfig::default(),
             None,
+            &morg_parser::TagTable::empty(),
         )
         .facts
     }

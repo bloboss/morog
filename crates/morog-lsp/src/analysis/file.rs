@@ -14,7 +14,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use morg_parser::{Document, LineIndex};
+use morg_parser::{Document, LineIndex, TagTable};
 use morog_bib::BibStore;
 use morog_sema::{Diagnostic, FileFacts, LintConfig, lint_file};
 
@@ -34,14 +34,16 @@ pub struct FileAnalysis {
 }
 
 impl FileAnalysis {
-    /// Parse `text` and run the file-local lints.
+    /// Parse `text` against the resolved user tag table (plan §10 T1) and
+    /// run the file-local lints.
     pub fn parse(
         path: &Path,
         text: Arc<str>,
         config: &LintConfig,
         bib: Option<&dyn BibStore>,
+        tags: &TagTable,
     ) -> Self {
-        let parsed = morg_parser::parse_document(&text);
+        let parsed = morg_parser::parse_document_with(&text, tags);
         let analysis = morog_sema::analyze_document(&parsed.document);
         let local_diags = lint_file(path, &analysis, config, bib);
         Self {
@@ -84,6 +86,7 @@ mod tests {
             TOPIC.into(),
             &LintConfig::default(),
             None,
+            &TagTable::empty(),
         );
         assert!(fa.text.is_some());
         assert!(fa.doc.is_some());
@@ -102,6 +105,7 @@ mod tests {
             TOPIC.into(),
             &LintConfig::default(),
             None,
+            &TagTable::empty(),
         );
         let restored = FileAnalysis::from_facts((*parsed.facts).clone());
         assert!(restored.text.is_none());

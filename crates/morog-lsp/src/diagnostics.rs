@@ -46,6 +46,7 @@ mod tests {
                 .into(),
             &morog_sema::LintConfig::default(),
             None,
+            &morg_parser::TagTable::empty(),
         ));
         let file = FileId(0);
         analysis.set_file(file, path, fa);

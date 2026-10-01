@@ -5,7 +5,7 @@
 //! clones of the persistent maps on the rayon pool (plan §5.2).
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -53,6 +53,11 @@ pub(crate) struct GlobalState {
     pub task_rx: Receiver<Task>,
     /// The embedded indexer, once spawned (plan §5.4 step 3).
     pub indexer: Option<crate::indexer::IndexerHandle>,
+    /// The `[tags]` config files (plan §10 T1), watched for live
+    /// reconfiguration: a change rebuilds the table, reparses open buffers,
+    /// and hands the indexer the new table (whose stored fingerprint check
+    /// drives the index rebuild). Set at cold start.
+    pub tag_config_paths: Vec<PathBuf>,
     /// Id source for server → client requests (progress, registrations).
     next_request_id: i32,
 }
@@ -70,6 +75,7 @@ impl GlobalState {
             task_tx,
             task_rx,
             indexer: None,
+            tag_config_paths: Vec::new(),
             next_request_id: 0,
         }
     }
@@ -122,15 +128,43 @@ impl GlobalState {
     }
 
     pub fn did_change_watched_files(&mut self, params: lsp_types::DidChangeWatchedFilesParams) {
-        let Some(indexer) = &self.indexer else {
-            return;
-        };
+        let mut tags_changed = false;
         for change in params.changes {
-            if let Some(path) = from_proto::abs_path(&change.uri) {
+            let Some(path) = from_proto::abs_path(&change.uri) else {
+                continue;
+            };
+            // A `[tags]` config file changed (creation and deletion
+            // included): handled once per batch, after the loop.
+            if self.tag_config_paths.contains(&path) {
+                tags_changed = true;
+                continue;
+            }
+            if let Some(indexer) = &self.indexer {
                 // Deletions ride the same path: the pipeline purges the row
                 // and the facts load comes back empty.
                 indexer.notify_changed(path);
             }
+        }
+        if tags_changed {
+            self.reload_tag_table();
+        }
+    }
+
+    /// Rebuild the resolved tag table after a config change (plan §10 T1):
+    /// reparse open buffers against it immediately, and hand it to the
+    /// indexer, whose stored `tag_table_hash` check turns the next reconcile
+    /// into a drop-and-rebuild when the table really differs.
+    pub fn reload_tag_table(&mut self) {
+        let (table, warnings) = morog_sema::tags::load_tag_table(&self.config.vault_root);
+        for warning in warnings {
+            eprintln!("morog-lsp: config: {warning}");
+        }
+        let table = Arc::new(table);
+        self.analysis.tag_table = Arc::clone(&table);
+        self.analysis.generation += 1;
+        self.reanalyze_open_files();
+        if let Some(indexer) = &self.indexer {
+            indexer.set_tag_table(table);
         }
     }
 
@@ -161,11 +195,13 @@ impl GlobalState {
         };
         let text = Arc::clone(&overlay.text);
         let path: Arc<Path> = Arc::clone(self.vfs.path(file));
+        let tags = Arc::clone(&self.analysis.tag_table);
         let fa = Arc::new(FileAnalysis::parse(
             &path,
             text,
             &self.config.lint,
             self.bib_store(),
+            &tags,
         ));
         let touched = self.analysis.set_file(file, path, fa);
         self.analysis.generation += 1;

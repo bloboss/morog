@@ -81,6 +81,10 @@ pub struct Analysis {
     /// completion. Not persisted in SQLite: the cold start reads it straight
     /// off the store root, and every indexer reconcile streams it afresh.
     pub bib_tags: Arc<[String]>,
+    /// The resolved user tag table (plan §10 T1): `[tags]` across the
+    /// vault-local, morog, and morg config layers. Every parse goes through
+    /// it; rebuilt by the main thread when a watched config file changes.
+    pub tag_table: Arc<morg_parser::TagTable>,
     /// Bumped by the main thread on every write; stale readers compare it.
     pub generation: u64,
 }
@@ -343,6 +347,7 @@ mod tests {
             text.into(),
             &LintConfig::default(),
             None,
+            &morg_parser::TagTable::empty(),
         ));
         analysis.set_file(file, path, fa)
     }

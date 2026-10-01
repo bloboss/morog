@@ -60,6 +60,17 @@ fn cold_start(state: &mut GlobalState) {
         .unwrap_or_else(|_| state.config.vault_root.clone());
     state.config.vault_root = vault_root.clone();
 
+    // The resolved `[tags]` table (plan §10 T1): vault-local `.morog.toml`
+    // over morog's config over morg's config — the same resolution as the
+    // CLI (`morog_sema::tags` is the shared implementation). The same three
+    // files become the live-reconfiguration watch list.
+    let (tag_table, warnings) = morog_sema::tags::load_tag_table(&vault_root);
+    for warning in warnings {
+        eprintln!("morog-lsp: config: {warning}");
+    }
+    state.analysis.tag_table = std::sync::Arc::new(tag_table);
+    state.tag_config_paths = morog_sema::tags::tag_config_paths(&vault_root);
+
     let db_path = morog_index::cache_db_path(&vault_root);
     if let Ok(conn) = morog_index::schema::open_ro(&db_path) {
         match (
@@ -94,6 +105,7 @@ fn cold_start(state: &mut GlobalState) {
     state.indexer = Some(crate::indexer::spawn(
         vault_root,
         state.config.bibrat_root.clone(),
+        std::sync::Arc::clone(&state.analysis.tag_table),
         state.task_tx.clone(),
     ));
 }
@@ -165,11 +177,12 @@ fn server_capabilities(encoding: PositionEncoding) -> ServerCapabilities {
     }
 }
 
-/// Dynamically watch the note files and the bibrat store — plan §5.4 step
-/// 4. The bibrat data directory (and its `config.toml`) usually lives
-/// outside the workspace folder, so those watchers use a `RelativePattern`
-/// with an absolute `baseUri` when the client supports it, else an
-/// absolute-path glob string — the best a plain pattern can do.
+/// Dynamically watch the note files, the bibrat store, and the `[tags]`
+/// config files — plan §5.4 step 4, §10 T1. The bibrat data directory (and
+/// its `config.toml`), like the XDG config files, usually lives outside the
+/// workspace folder, so those watchers use a `RelativePattern` with an
+/// absolute `baseUri` when the client supports it, else an absolute-path
+/// glob string — the best a plain pattern can do.
 ///
 /// Fallback: clients without dynamic watchers error the registration back
 /// (ignored), and clients that silently refuse to watch outside the
@@ -179,7 +192,7 @@ fn server_capabilities(encoding: PositionEncoding) -> ServerCapabilities {
 /// refresh is attempted by design.
 fn register_watchers(state: &mut GlobalState) {
     let mut watchers = vec![serde_json::json!({ "globPattern": "**/*.{md,morg}" })];
-    if let Some(watch) = state.config.bib_watch() {
+    {
         let relative = state.config.relative_pattern_support;
         let mut push = |base: &std::path::Path, pattern: &str| {
             let glob = relative
@@ -189,11 +202,22 @@ fn register_watchers(state: &mut GlobalState) {
                 .unwrap_or_else(|| serde_json::json!(format!("{}/{pattern}", base.display())));
             watchers.push(serde_json::json!({ "globPattern": glob }));
         };
-        push(&watch.root, "**");
-        if let Some(config) = &watch.config
-            && let (Some(dir), Some(name)) = (config.parent(), config.file_name())
-        {
-            push(dir, &name.to_string_lossy());
+        if let Some(watch) = state.config.bib_watch() {
+            push(&watch.root, "**");
+            if let Some(config) = &watch.config
+                && let (Some(dir), Some(name)) = (config.parent(), config.file_name())
+            {
+                push(dir, &name.to_string_lossy());
+            }
+        }
+        // The three `[tags]` config files (plan §10 T1): the vault-local
+        // `.morog.toml` is a dotfile the note glob misses, and the two XDG
+        // files live outside the workspace, so each gets its own watcher —
+        // the bibrat-config approach.
+        for config in &state.tag_config_paths {
+            if let (Some(dir), Some(name)) = (config.parent(), config.file_name()) {
+                push(dir, &name.to_string_lossy());
+            }
         }
     }
     state.send_request(
@@ -495,11 +519,13 @@ fn research_new(
 
     // Make the note visible to requests immediately; the indexer writes
     // SQLite in the background (it remains the sole writer).
+    let tags = std::sync::Arc::clone(&state.analysis.tag_table);
     let fa = crate::analysis::FileAnalysis::parse(
         &path,
         content.into(),
         &state.config.lint,
         state.bib_store(),
+        &tags,
     );
     state.set_indexed_file(&path, fa);
     if let Some(indexer) = &state.indexer {

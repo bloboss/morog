@@ -1,8 +1,8 @@
 //! `textDocument/semanticTokens/full` (plan §5.6): links coloured by the
-//! **target's** kind, stance and op values in frontmatter, citekeys, and
-//! `#mine` tags.
+//! **target's** kind, stance and op values in frontmatter, citekeys,
+//! `#mine` tags, and the named-group fields of custom tags.
 //!
-//! The legend is deliberately minimal — six token types, no modifiers:
+//! The legend is deliberately minimal — seven token types, no modifiers:
 //!
 //! | index | type         | used for                                   |
 //! |-------|--------------|--------------------------------------------|
@@ -12,6 +12,7 @@
 //! | 3     | `enumMember` | `stance:` and `op:` values in frontmatter  |
 //! | 4     | `macro`      | inline `[@key]` citations                  |
 //! | 5     | `decorator`  | `#mine` tags                               |
+//! | 6     | `property`   | named-group field sub-spans inside custom tag arguments (plan §10 T1 — config-driven highlighting lands via LSP, not tree-sitter) |
 //!
 //! Unresolved targets stay uncoloured (the `sta::relation-target` diagnostic
 //! already marks them). Content nested in callouts is skipped: its spans are
@@ -34,9 +35,13 @@ const TOKEN_SOURCE: u32 = 2;
 const TOKEN_STANCE_OP: u32 = 3;
 const TOKEN_CITE: u32 = 4;
 const TOKEN_MINE: u32 = 5;
+const TOKEN_CUSTOM_FIELD: u32 = 6;
 
 /// The legend advertised in the server capabilities; indices must match the
-/// `TOKEN_*` constants above.
+/// `TOKEN_*` constants above. Index 6 (`property`) is the plan §10 T1
+/// addition: each named-group field of a matched custom tag argument gets
+/// its sub-span (the capture's absolute byte range) coloured, so
+/// config-declared structure is visible without any grammar change.
 pub(crate) fn legend() -> SemanticTokensLegend {
     SemanticTokensLegend {
         token_types: vec![
@@ -46,6 +51,7 @@ pub(crate) fn legend() -> SemanticTokensLegend {
             SemanticTokenType::ENUM_MEMBER,
             SemanticTokenType::MACRO,
             SemanticTokenType::new("decorator"),
+            SemanticTokenType::PROPERTY,
         ],
         token_modifiers: Vec::new(),
     }
@@ -107,7 +113,7 @@ pub(crate) fn handle(
             }
         }
         for block in &doc.children {
-            mine_tag_spans(block, &mut raw);
+            tag_token_spans(block, &mut raw);
         }
     }
 
@@ -167,12 +173,21 @@ fn line_end_character(
     to_proto::position(text, index, line_end, encoding).character
 }
 
-/// Spans of `#mine` tags in one top-level block. Callout bodies are skipped
-/// (their spans are relative — parser convention).
-fn mine_tag_spans(block: &Block, out: &mut Vec<(Span, u32)>) {
+/// Tag-borne token spans in one top-level block: `#mine` tags, and the
+/// named-group field sub-spans of custom tags (plan §10 T1). Callout bodies
+/// are skipped (their spans are relative — parser convention).
+fn tag_token_spans(block: &Block, out: &mut Vec<(Span, u32)>) {
     fn tag(tag: &Tag, out: &mut Vec<(Span, u32)>) {
-        if matches!(&tag.kind, TagKind::Unknown { name, .. } if name == "mine") {
-            out.push((tag.span, TOKEN_MINE));
+        match &tag.kind {
+            TagKind::Unknown { name, .. } if name == "mine" => {
+                out.push((tag.span, TOKEN_MINE));
+            }
+            // Mismatched custom tags carry no fields, so they stay
+            // uncoloured — the `tag::shape-mismatch` diagnostic marks them.
+            TagKind::Custom { fields, .. } => {
+                out.extend(fields.iter().map(|f| (f.span, TOKEN_CUSTOM_FIELD)));
+            }
+            _ => {}
         }
     }
     fn inline(content: &InlineContent, out: &mut Vec<(Span, u32)>) {
@@ -201,7 +216,7 @@ fn mine_tag_spans(block: &Block, out: &mut Vec<(Span, u32)>) {
                     inline(desc, out);
                 }
                 for child in &item.children {
-                    mine_tag_spans(child, out);
+                    tag_token_spans(child, out);
                 }
             }
         }
@@ -227,11 +242,15 @@ mod tests {
     use lsp_types::{PartialResultParams, TextDocumentIdentifier, WorkDoneProgressParams};
 
     use super::*;
-    use crate::handlers::test_support::snapshot;
 
     /// Decode the delta encoding back to absolute `line:char len type`.
     fn check(files: &[(&str, &str)], expected: Expect) {
-        let (snap, position) = snapshot(files, &["wright2004"]);
+        check_with_tags(files, morg_parser::TagTable::empty(), expected);
+    }
+
+    fn check_with_tags(files: &[(&str, &str)], tags: morg_parser::TagTable, expected: Expect) {
+        let (snap, position) =
+            crate::handlers::test_support::snapshot_with_tags(files, &["wright2004"], tags);
         let response = handle(
             &snap,
             SemanticTokensParams {
@@ -246,7 +265,15 @@ mod tests {
         let Some(SemanticTokensResult::Tokens(tokens)) = response else {
             panic!("expected tokens, got {response:?}");
         };
-        let names = ["topic", "argument", "source", "stance/op", "cite", "mine"];
+        let names = [
+            "topic",
+            "argument",
+            "source",
+            "stance/op",
+            "cite",
+            "mine",
+            "custom-field",
+        ];
         let (mut line, mut start) = (0u32, 0u32);
         let rendered = tokens
             .data
@@ -303,6 +330,31 @@ mod tests {
                 5:4 len 13 topic
                 5:25 len 13 cite
                 5:40 len 5 mine"#]],
+        );
+    }
+
+    #[test]
+    fn custom_tag_fields_get_property_sub_spans() {
+        let table = morg_parser::TagTable::build([morg_parser::TagDeclaration {
+            name: "book".to_owned(),
+            pattern: Some(r#""(?<title>[^"]+)"\s+by\s+(?<author>.+)"#.to_owned()),
+            kind: None,
+        }])
+        .unwrap();
+        check_with_tags(
+            &[(
+                "/v/read.md",
+                "---\nid: r$0ead\nkind: topic\n---\n\nDone [@wright2004]. #book \"Dune\" by Frank Herbert\n\nBad one. #book untitled #mine\n",
+            )],
+            table,
+            // Each matched named group gets its sub-span; the mismatched
+            // occurrence stays uncoloured (its lint marks it) while `#mine`
+            // on the same line still lands.
+            expect![[r#"
+                5:5 len 13 cite
+                5:27 len 4 custom-field
+                5:36 len 13 custom-field
+                7:24 len 5 mine"#]],
         );
     }
 

@@ -250,6 +250,16 @@ pub(crate) mod test_support {
         files: &[(&str, &str)],
         bib_keys: &[&str],
     ) -> (Snapshot, TextDocumentPositionParams) {
+        snapshot_with_tags(files, bib_keys, morg_parser::TagTable::empty())
+    }
+
+    /// [`snapshot`], parsing every fixture against a resolved user tag
+    /// table (plan §10 T1).
+    pub(crate) fn snapshot_with_tags(
+        files: &[(&str, &str)],
+        bib_keys: &[&str],
+        tags: morg_parser::TagTable,
+    ) -> (Snapshot, TextDocumentPositionParams) {
         let bib = Arc::new(BibIndex::from_entries(bib_keys.iter().map(|&key| {
             let mut entry = morog_bib::BibEntry::minimal(key);
             entry.collection = morog_bib::CollectionPath("fixtures".into());
@@ -263,6 +273,7 @@ pub(crate) mod test_support {
         })));
         let mut analysis = Analysis {
             bib,
+            tag_table: Arc::new(tags),
             ..Analysis::default()
         };
 
@@ -282,11 +293,13 @@ pub(crate) mod test_support {
                 text
             };
             let path: Arc<Path> = Arc::from(Path::new(path).to_path_buf());
+            let tags = Arc::clone(&analysis.tag_table);
             let fa = Arc::new(FileAnalysis::parse(
                 &path,
                 text.into(),
                 &morog_sema::LintConfig::default(),
                 Some(&*analysis.bib),
+                &tags,
             ));
             analysis.set_file(file, path, fa);
         }

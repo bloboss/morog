@@ -465,6 +465,7 @@ mod tests {
             text.into(),
             &LintConfig::default(),
             None,
+            &morg_parser::TagTable::empty(),
         );
         expected.assert_debug_eq(&classify(&fa, offset));
     }
@@ -635,6 +636,7 @@ mod tests {
             text.as_str().into(),
             &LintConfig::default(),
             None,
+            &morg_parser::TagTable::empty(),
         );
         expected.assert_debug_eq(&classify_completion(&text, &fa, offset));
     }
@@ -855,6 +857,7 @@ mod tests {
             text.into(),
             &LintConfig::default(),
             None,
+            &morg_parser::TagTable::empty(),
         );
         let offset = text.find("id:sla").unwrap() + 4;
         let facts_only = FileAnalysis::from_facts((*fa.facts).clone());

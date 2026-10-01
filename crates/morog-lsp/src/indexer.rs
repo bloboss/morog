@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
+use morg_parser::TagTable;
 use morog_bib::BibStore;
 use morog_sema::FileFacts;
 
@@ -39,28 +40,44 @@ pub(crate) enum IndexEvent {
     },
 }
 
+/// What the main thread sends the indexer.
+enum IndexerMsg {
+    /// A note (or bibrat) path changed on disk.
+    Changed(PathBuf),
+    /// The resolved `[tags]` table was rebuilt after a config change (plan
+    /// §10 T1): re-index with it. The pipeline's stored `tag_table_hash`
+    /// check turns the run into a drop-and-rebuild when the table differs.
+    TagTable(Arc<TagTable>),
+}
+
 /// Main-thread handle: forward changed paths; the thread exits when the
 /// handle (and its channel) drops with the `GlobalState`.
 pub(crate) struct IndexerHandle {
-    tx: Sender<PathBuf>,
+    tx: Sender<IndexerMsg>,
 }
 
 impl IndexerHandle {
     pub fn notify_changed(&self, path: PathBuf) {
-        let _ = self.tx.send(path);
+        let _ = self.tx.send(IndexerMsg::Changed(path));
+    }
+
+    pub fn set_tag_table(&self, table: Arc<TagTable>) {
+        let _ = self.tx.send(IndexerMsg::TagTable(table));
     }
 }
 
-/// Spawn the indexer over `vault_root` (already canonicalized).
+/// Spawn the indexer over `vault_root` (already canonicalized), parsing
+/// against the resolved user tag table.
 pub(crate) fn spawn(
     vault_root: PathBuf,
     bibrat_root: Option<PathBuf>,
+    tags: Arc<TagTable>,
     task_tx: Sender<Task>,
 ) -> IndexerHandle {
     let (tx, rx) = crossbeam_channel::unbounded();
     std::thread::Builder::new()
         .name("morog-indexer".to_owned())
-        .spawn(move || run(vault_root, bibrat_root, &rx, &task_tx))
+        .spawn(move || run(vault_root, bibrat_root, tags, &rx, &task_tx))
         .expect("spawn indexer thread");
     IndexerHandle { tx }
 }
@@ -72,7 +89,8 @@ fn send(task_tx: &Sender<Task>, event: IndexEvent) {
 fn run(
     vault_root: PathBuf,
     bibrat_root: Option<PathBuf>,
-    rx: &Receiver<PathBuf>,
+    mut tags: Arc<TagTable>,
+    rx: &Receiver<IndexerMsg>,
     task_tx: &Sender<Task>,
 ) {
     let db_path = morog_index::cache_db_path(&vault_root);
@@ -93,35 +111,57 @@ fn run(
 
     // Startup reconcile: stat-compare the disk against the index, then
     // stream the post-reconcile state back (plan §5.4 step 3).
-    reconcile(&vault_root, &db_path, bib.as_ref(), task_tx);
+    reconcile(&vault_root, &db_path, bib.as_ref(), &tags, task_tx);
 
     // Save / watched-change loop: coalesce bursts, re-run the incremental
     // pipeline (it only re-reads files whose stat changed), then report the
     // touched files (plan §5.3).
     while let Ok(first) = rx.recv() {
-        let mut touched = vec![first];
+        let mut msgs = vec![first];
         let settle = Instant::now() + Duration::from_millis(50);
         while let Ok(more) = rx.recv_deadline(settle) {
-            touched.push(more);
+            msgs.push(more);
         }
 
+        let mut touched = Vec::new();
+        let mut retabled = false;
+        for msg in msgs {
+            match msg {
+                IndexerMsg::Changed(path) => touched.push(path),
+                IndexerMsg::TagTable(table) => {
+                    tags = table;
+                    retabled = true;
+                }
+            }
+        }
+
+        // A new tag table (plan §10 T1) invalidates every stored parse: run
+        // a full reconcile with it — `index_vault_with_tags` compares the
+        // table fingerprint against the stored `tag_table_hash` and drops
+        // and rebuilds the database when they differ — and stream the
+        // post-rebuild facts back wholesale.
+        //
         // A bibrat change (entry dirs, `citation.bib`, `TAGS.yml`, the
         // config) invalidates the whole bibliography: re-open the store (a
         // cheap walk) and run a full reconcile, which rewrites `bib_entries`
         // on this thread — the sole SQLite writer — and streams the fresh
         // table and tag vocabulary back for `Analysis.bib` / `bib_tags`.
-        // The reload also covers any vault files in the same burst.
-        if touched
+        // Either reload also covers any vault files in the same burst.
+        let bib_changed = touched
             .iter()
-            .any(|path| watch.as_ref().is_some_and(|watch| watch.contains(path)))
-        {
-            bib = open_store(bibrat_root.as_deref());
-            reconcile(&vault_root, &db_path, bib.as_ref(), task_tx);
+            .any(|path| watch.as_ref().is_some_and(|watch| watch.contains(path)));
+        if retabled || bib_changed {
+            if bib_changed {
+                bib = open_store(bibrat_root.as_deref());
+            }
+            reconcile(&vault_root, &db_path, bib.as_ref(), &tags, task_tx);
             continue;
         }
 
         let bib_store: Option<&dyn BibStore> = bib.as_ref().map(|b| b as &dyn BibStore);
-        if let Err(e) = morog_index::index_vault_with_bib(&vault_root, &db_path, false, bib_store) {
+        if let Err(e) =
+            morog_index::index_vault_with_tags(&vault_root, &db_path, false, bib_store, &tags)
+        {
             eprintln!("morog-lsp: indexer: {e}");
             continue;
         }
@@ -164,17 +204,19 @@ fn reconcile(
     vault_root: &Path,
     db_path: &Path,
     bib: Option<&morog_bib::BibratStore>,
+    tags: &TagTable,
     task_tx: &Sender<Task>,
 ) {
     let bib_store: Option<&dyn BibStore> = bib.map(|b| b as &dyn BibStore);
     send(task_tx, IndexEvent::Begin);
-    let summary = match morog_index::index_vault_with_bib(vault_root, db_path, false, bib_store) {
-        Ok(stats) => format!(
-            "indexed {} of {} files in {:.1?}",
-            stats.indexed, stats.scanned, stats.wall
-        ),
-        Err(e) => format!("index error: {e}"),
-    };
+    let summary =
+        match morog_index::index_vault_with_tags(vault_root, db_path, false, bib_store, tags) {
+            Ok(stats) => format!(
+                "indexed {} of {} files in {:.1?}",
+                stats.indexed, stats.scanned, stats.wall
+            ),
+            Err(e) => format!("index error: {e}"),
+        };
     let tags = bib.map(BibStore::tags).unwrap_or_default();
     match load_everything(db_path, vault_root) {
         Ok((files, bib_entries)) => send(
