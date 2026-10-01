@@ -5,12 +5,21 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
+use morog_bib::{BibStore, BibratStore};
 use morog_index::IndexStats;
+
+use crate::cli::BibArgs;
 
 /// How long to let filesystem events settle before re-indexing.
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 
-pub fn run(vault: Option<PathBuf>, full: bool, watch: bool, format: &str) -> ExitCode {
+pub fn run(
+    vault: Option<PathBuf>,
+    full: bool,
+    watch: bool,
+    format: &str,
+    bib_args: &BibArgs,
+) -> ExitCode {
     let vault = vault.unwrap_or_else(|| PathBuf::from("."));
     let vault = match vault.canonicalize() {
         Ok(v) => v,
@@ -21,7 +30,21 @@ pub fn run(vault: Option<PathBuf>, full: bool, watch: bool, format: &str) -> Exi
     };
     let db_path = morog_index::cache_db_path(&vault);
 
-    match morog_index::index_vault(&vault, &db_path, full) {
+    // Missing store is a notice, not an error (plan §4): the index still
+    // builds, with an empty `bib_entries` table.
+    let store = match crate::bib::load(bib_args, "index") {
+        Ok(store) => store,
+        Err(message) => {
+            eprintln!("morog index: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if store.is_none() && !bib_args.no_bib {
+        eprintln!("morog index: no bibrat store found; bib_entries left empty");
+    }
+    let bib = store.as_ref().map(|s| s as &dyn BibStore);
+
+    match morog_index::index_vault_with_bib(&vault, &db_path, full, bib) {
         Ok(stats) => report(&vault, &stats, format),
         Err(e) => {
             eprintln!("morog index: {e}");
@@ -32,7 +55,7 @@ pub fn run(vault: Option<PathBuf>, full: bool, watch: bool, format: &str) -> Exi
     if !watch {
         return ExitCode::SUCCESS;
     }
-    if let Err(e) = watch_loop(&vault, &db_path, format) {
+    if let Err(e) = watch_loop(&vault, &db_path, format, store.as_ref()) {
         eprintln!("morog index: watch: {e}");
         return ExitCode::FAILURE;
     }
@@ -43,22 +66,24 @@ fn report(vault: &Path, stats: &IndexStats, format: &str) {
     if format == "json" {
         println!(
             "{{\"vault\": \"{}\", \"scanned\": {}, \"changed\": {}, \"indexed\": {}, \
-             \"deleted\": {}, \"wall_ms\": {}}}",
+             \"deleted\": {}, \"bib_entries\": {}, \"wall_ms\": {}}}",
             crate::json::escape(&vault.display().to_string()),
             stats.scanned,
             stats.changed,
             stats.indexed,
             stats.deleted,
+            stats.bib_entries,
             stats.wall.as_millis()
         );
     } else {
         println!(
-            "indexed {}: {} scanned, {} changed, {} indexed, {} deleted in {:.2?}",
+            "indexed {}: {} scanned, {} changed, {} indexed, {} deleted, {} bib in {:.2?}",
             vault.display(),
             stats.scanned,
             stats.changed,
             stats.indexed,
             stats.deleted,
+            stats.bib_entries,
             stats.wall
         );
     }
@@ -66,7 +91,12 @@ fn report(vault: &Path, stats: &IndexStats, format: &str) {
 
 /// Debounced watch loop: any event touching a note file (or something
 /// without an extension, e.g. a directory) triggers an incremental rescan.
-fn watch_loop(vault: &Path, db_path: &Path, format: &str) -> notify::Result<()> {
+fn watch_loop(
+    vault: &Path,
+    db_path: &Path,
+    format: &str,
+    store: Option<&BibratStore>,
+) -> notify::Result<()> {
     use notify::{RecursiveMode, Watcher};
 
     let (tx, rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
@@ -96,7 +126,9 @@ fn watch_loop(vault: &Path, db_path: &Path, format: &str) -> notify::Result<()> 
         if !relevant {
             continue;
         }
-        match morog_index::index_vault(vault, db_path, false) {
+        // The bib snapshot from startup is reused; only the vault is watched.
+        let bib = store.map(|s| s as &dyn BibStore);
+        match morog_index::index_vault_with_bib(vault, db_path, false, bib) {
             Ok(stats) if stats.changed == 0 && stats.deleted == 0 => {}
             Ok(stats) => report(vault, &stats, format),
             Err(e) => eprintln!("morog index: {e}"),

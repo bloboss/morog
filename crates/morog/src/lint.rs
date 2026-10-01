@@ -5,12 +5,28 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use morog_bib::BibStore;
 use morog_sema::{Analysis, Diagnostic, LintConfig, Severity, VaultNote};
+
+use crate::cli::BibArgs;
 
 /// Run the lint subcommand over the given paths (default: the current
 /// directory). Returns a failure exit code when any error-severity
 /// diagnostic fires.
-pub fn run(paths: Vec<PathBuf>, format: &str) -> ExitCode {
+///
+/// A discovered (or `--bib-root`-supplied) bibrat store enables the
+/// bibliography-backed lints: `sta::unknown-citekey` and the
+/// source-id-matches-key half of `sta::id`.
+pub fn run(paths: Vec<PathBuf>, format: &str, bib_args: &BibArgs) -> ExitCode {
+    let store = match crate::bib::load(bib_args, "lint") {
+        Ok(store) => store,
+        Err(message) => {
+            eprintln!("morog lint: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let bib = store.as_ref().map(|s| s as &dyn BibStore);
+
     let roots = if paths.is_empty() {
         vec![PathBuf::from(".")]
     } else {
@@ -42,7 +58,7 @@ pub fn run(paths: Vec<PathBuf>, format: &str) -> ExitCode {
         };
         let parsed = morg_parser::parse_document(&source);
         let analysis = morog_sema::analyze_document(&source, &parsed.document);
-        diagnostics.extend(morog_sema::lint_file(&path, &analysis, &config, None));
+        diagnostics.extend(morog_sema::lint_file(&path, &analysis, &config, bib));
         analyses.push((path, analysis));
     }
 

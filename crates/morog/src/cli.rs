@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
@@ -28,6 +28,8 @@ pub enum Command {
         /// Keep running and re-index on file changes
         #[arg(long)]
         watch: bool,
+        #[command(flatten)]
+        bib: BibArgs,
     },
     /// Query the index (notes, relations, citations)
     Query {
@@ -49,5 +51,29 @@ pub enum Command {
     Lint {
         /// Markdown files or directories to lint
         files: Vec<PathBuf>,
+        #[command(flatten)]
+        bib: BibArgs,
     },
+}
+
+/// How a subcommand finds the bibrat store (plan §4). The default is
+/// auto-discovery: config `[store] data_dir`, else `$BIBRAT_DATA_DIR`,
+/// else `$XDG_DATA_HOME/bibrat`, else `~/.local/share/bibrat` — missing
+/// store means the bibliography-backed behavior is simply skipped.
+#[derive(Debug, Args)]
+#[group(multiple = false)]
+pub struct BibArgs {
+    /// Require the bibrat store (default is auto-discovery, where a
+    /// missing store is skipped; this makes it an error)
+    #[arg(long)]
+    pub bib: bool,
+
+    /// Run without a bibliography (bib-backed lints skipped, bib_entries
+    /// left empty)
+    #[arg(long)]
+    pub no_bib: bool,
+
+    /// Bibrat data directory to use instead of auto-discovery
+    #[arg(long, value_name = "DIR")]
+    pub bib_root: Option<PathBuf>,
 }

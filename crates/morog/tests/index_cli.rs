@@ -69,11 +69,11 @@ fn index_and_query_fixture_vault() {
     let vault = Path::new(fixture_vault());
 
     // Index with the vault as cwd (the default), then rescan explicitly.
-    let out = home.ok(vault, &["index"]);
+    let out = home.ok(vault, &["index", "--no-bib"]);
     assert!(out.contains("9 scanned"), "stdout: {out}");
     assert!(out.contains("9 indexed"), "stdout: {out}");
 
-    let out = home.ok(vault, &["--format", "json", "index", "."]);
+    let out = home.ok(vault, &["--format", "json", "index", "--no-bib", "."]);
     assert!(out.contains("\"scanned\": 9"), "stdout: {out}");
     assert!(out.contains("\"changed\": 0"), "stdout: {out}");
     assert!(out.contains("\"indexed\": 0"), "stdout: {out}");
@@ -90,7 +90,8 @@ fn index_and_query_fixture_vault() {
     assert!(out.contains("10"), "v_edges: {out}");
 
     // Dangling: one unknown note, one unknown anchor, three cites with no
-    // bib store behind them (bib_entries is empty in M4).
+    // bib store behind them (`--no-bib` keeps bib_entries empty and the
+    // run independent of any bibrat store on the machine).
     let out = home.query(
         vault,
         "SELECT dst, reason FROM v_dangling ORDER BY dst, reason",
@@ -153,7 +154,7 @@ fn query_rejects_writes_and_missing_index() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("run `morog index` first"), "{stderr}");
 
-    home.ok(vault, &["index"]);
+    home.ok(vault, &["index", "--no-bib"]);
 
     for sql in [
         "DELETE FROM files",
@@ -183,7 +184,7 @@ fn index_bench_vault_smoke() {
     }
     let home = TempHome::new("bench");
 
-    let out = home.ok(bench_vault, &["--format", "json", "index"]);
+    let out = home.ok(bench_vault, &["--format", "json", "index", "--no-bib"]);
     let scanned: usize = out
         .split("\"scanned\": ")
         .nth(1)
@@ -193,9 +194,49 @@ fn index_bench_vault_smoke() {
     assert!(scanned > 1000, "suspiciously small bench vault: {out}");
 
     // Warm rescan sees no changes.
-    let out = home.ok(bench_vault, &["--format", "json", "index"]);
+    let out = home.ok(bench_vault, &["--format", "json", "index", "--no-bib"]);
     assert!(out.contains("\"changed\": 0"), "stdout: {out}");
 
     let rows = home.query(bench_vault, "SELECT COUNT(*) AS n FROM notes");
     assert!(!rows.is_empty());
+}
+
+#[test]
+fn index_with_bib_root_fills_bib_entries() {
+    let home = TempHome::new("bib");
+    let vault = Path::new(fixture_vault());
+    let bibrat = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bibrat");
+
+    let out = home.ok(
+        vault,
+        &["--format", "json", "index", "--full", "--bib-root", bibrat],
+    );
+    assert!(out.contains("\"bib_entries\": 3"), "stdout: {out}");
+
+    // Metadata parsed out of citation.bib lands in the table.
+    let out = home.query(
+        vault,
+        "SELECT citekey, collection, title, year, doi FROM bib_entries \
+         WHERE citekey = 'wright_leaf_2004'",
+    );
+    assert!(out.contains("papers"), "bib_entries: {out}");
+    assert!(
+        out.contains("The worldwide leaf economics spectrum"),
+        "{out}"
+    );
+    assert!(out.contains("2004"), "{out}");
+    assert!(out.contains("10.1038/nature02403"), "{out}");
+
+    // Two of the three dangling cites now resolve against the store; only
+    // the unknown key, the unknown note, and the unknown anchor remain.
+    let out = home.query(vault, "SELECT dst, reason FROM v_dangling ORDER BY dst");
+    assert!(out.contains("poorter_biomass_2012"), "v_dangling: {out}");
+    assert!(!out.contains("wright_leaf_2004"), "v_dangling: {out}");
+    assert!(out.contains("(3 rows)"), "v_dangling: {out}");
+
+    // Re-indexing without the store clears the table again.
+    let out = home.ok(vault, &["--format", "json", "index", "--no-bib"]);
+    assert!(out.contains("\"bib_entries\": 0"), "stdout: {out}");
+    let out = home.query(vault, "SELECT COUNT(*) AS n FROM bib_entries");
+    assert!(out.contains("0"), "bib_entries after --no-bib: {out}");
 }
