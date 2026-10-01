@@ -14,7 +14,7 @@ struct Parsed {
 
 fn analyze(source: &str) -> Parsed {
     let result = morg_parser::parse_document(source);
-    let (meta, meta_errors) = parse_note_meta(result.document.frontmatter.as_ref(), source);
+    let (meta, meta_errors) = parse_note_meta(result.document.frontmatter.as_ref());
     Parsed { meta, meta_errors }
 }
 
@@ -168,18 +168,30 @@ fn relation_errors_carry_spans() {
     let src = "---\nid: an-arg\nkind: argument\nrelations:\n  - { to: squares, stance: maybe }\n  - { stance: supports }\n  - { to: circles, stance: supports, weight: 3 }\n---\n";
     let a = analyze(src);
     let errs = &a.meta_errors;
+
+    // A bad `stance:` highlights exactly the offending value.
     let bad_stance = errs
         .iter()
         .find(|e| matches!(&e.kind, MetaErrorKind::BadEnumValue { field, value, .. } if field == "relations[0].stance" && value == "maybe"))
         .expect("bad stance");
     let span = bad_stance.span.expect("span");
-    assert_eq!(&src[span.start..span.end], "squares");
-    assert!(errs.iter().any(
-        |e| matches!(&e.kind, MetaErrorKind::MissingField { field } if field == "relations[1].to")
-    ));
-    assert!(errs.iter().any(
-        |e| matches!(&e.kind, MetaErrorKind::UnknownKey { key, .. } if key == "relations[2].weight")
-    ));
+    assert_eq!(&src[span.start..span.end], "maybe");
+
+    // A missing `to:` points at the whole entry.
+    let missing_to = errs
+        .iter()
+        .find(|e| matches!(&e.kind, MetaErrorKind::MissingField { field } if field == "relations[1].to"))
+        .expect("missing to");
+    let span = missing_to.span.expect("span");
+    assert_eq!(&src[span.start..span.end], "{ stance: supports }");
+
+    // An unknown relation key points at the key itself.
+    let unknown = errs
+        .iter()
+        .find(|e| matches!(&e.kind, MetaErrorKind::UnknownKey { key, .. } if key == "relations[2].weight"))
+        .expect("unknown key");
+    let span = unknown.span.expect("span");
+    assert_eq!(&src[span.start..span.end], "weight");
 
     // Only the well-formed relation (valid `to` and `stance`) survives.
     let NoteMeta::Argument(m) = &a.meta else {
@@ -187,6 +199,71 @@ fn relation_errors_carry_spans() {
     };
     assert_eq!(m.relations.len(), 1);
     assert_eq!(m.relations[0].target_id, "circles");
+}
+
+#[test]
+fn block_style_relation_spans_are_exact() {
+    // Block (non-flow) mappings, including a repeated `to:` value that a
+    // text search could misattribute, and a bad `op:`.
+    let src = "---\nid: an-arg\nkind: argument\nrelations:\n  - to: squares\n    stance: supports\n  - to: squares\n    stance: nah\n    op: ponder\n---\n";
+    let a = analyze(src);
+    let errs = &a.meta_errors;
+
+    let bad_stance = errs
+        .iter()
+        .find(|e| matches!(&e.kind, MetaErrorKind::BadEnumValue { field, .. } if field == "relations[1].stance"))
+        .expect("bad stance");
+    let span = bad_stance.span.expect("span");
+    assert_eq!(&src[span.start..span.end], "nah");
+    // The second entry's error sits after the first entry's text.
+    assert!(span.start > src.find("supports").unwrap());
+
+    let bad_op = errs
+        .iter()
+        .find(|e| matches!(&e.kind, MetaErrorKind::BadEnumValue { field, value, .. } if field == "relations[1].op" && value == "ponder"))
+        .expect("bad op");
+    let span = bad_op.span.expect("span");
+    assert_eq!(&src[span.start..span.end], "ponder");
+
+    // The first (valid) relation's span is its own `to:` text.
+    let NoteMeta::Argument(m) = &a.meta else {
+        panic!("expected argument meta");
+    };
+    assert_eq!(m.relations.len(), 1);
+    let r = &m.relations[0];
+    assert_eq!(&src[r.span.start..r.span.end], "squares");
+    assert_eq!(r.span.start, src.find("squares").unwrap());
+    assert_eq!((r.span.line, r.span.col), (5, 9));
+}
+
+#[test]
+fn non_string_list_items_point_at_themselves() {
+    let src = "---\nid: a-topic\nkind: topic\naliases: [ok, 3]\nrelated:\n  - leaf-mass-ratio\n  - { a: 1 }\n---\n";
+    let a = analyze(src);
+    let errs = &a.meta_errors;
+
+    let bad_alias = errs
+        .iter()
+        .find(|e| matches!(&e.kind, MetaErrorKind::TypeMismatch { field, .. } if field == "aliases[1]"))
+        .expect("bad alias");
+    let span = bad_alias.span.expect("span");
+    assert_eq!(&src[span.start..span.end], "3");
+
+    let bad_related = errs
+        .iter()
+        .find(|e| matches!(&e.kind, MetaErrorKind::TypeMismatch { field, .. } if field == "related[1]"))
+        .expect("bad related");
+    let span = bad_related.span.expect("span");
+    assert_eq!(&src[span.start..span.end], "{ a: 1 }");
+
+    // The good items still come through, with exact spans.
+    let NoteMeta::Topic(m) = &a.meta else {
+        panic!("expected topic meta");
+    };
+    assert_eq!(m.aliases, ["ok"]);
+    assert_eq!(m.related.len(), 1);
+    let span = m.related[0].span;
+    assert_eq!(&src[span.start..span.end], "leaf-mass-ratio");
 }
 
 #[test]

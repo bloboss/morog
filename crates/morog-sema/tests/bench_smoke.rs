@@ -54,7 +54,7 @@ fn bench_vault_smoke() {
         let source = std::fs::read_to_string(path).expect("read note");
         let parsed = morg_parser::parse_document(&source);
         parse_errors += parsed.errors.len();
-        let analysis = analyze_document(&source, &parsed.document);
+        let analysis = analyze_document(&parsed.document);
         assert!(
             analysis.meta_errors.is_empty(),
             "unexpected meta errors in {}: {:?}",

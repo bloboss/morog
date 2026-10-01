@@ -327,7 +327,7 @@ fn process(job: &Job) -> std::io::Result<Msg> {
     }
     let source = String::from_utf8_lossy(&raw).into_owned();
     let parsed = morg_parser::parse_document(&source);
-    let analysis = morog_sema::analyze_document(&source, &parsed.document);
+    let analysis = morog_sema::analyze_document(&parsed.document);
     Ok(Msg::File(Box::new(FileMsg {
         rel: job.rel.clone(),
         mtime_ns: job.mtime_ns,

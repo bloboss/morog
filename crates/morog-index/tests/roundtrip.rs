@@ -372,7 +372,7 @@ fn gen_note(rng: &mut Rng, i: usize, cov: &mut Coverage) -> String {
 
 fn extract(source: &str) -> FileFacts {
     let parsed = parse_document(source);
-    morog_sema::analyze_document(source, &parsed.document).facts
+    morog_sema::analyze_document(&parsed.document).facts
 }
 
 /// Store `facts` as a fresh file row and load them back.

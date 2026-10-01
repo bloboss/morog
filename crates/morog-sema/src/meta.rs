@@ -13,7 +13,7 @@
 //! is an error.
 
 use morg_parser::saphyr::YamlOwned;
-use morg_parser::{Frontmatter, LineIndex, Span};
+use morg_parser::{Frontmatter, FrontmatterNode, FrontmatterNodeKind, Span};
 
 use crate::types::{
     ArgumentForm, ArgumentStatus, BloomOp, NoteId, NoteKind, NoteUuid, SourceStatus, Stance,
@@ -115,7 +115,8 @@ pub struct RelationDecl {
     pub target_anchor: Option<String>,
     pub stance: Stance,
     pub op: Option<BloomOp>,
-    /// Span of this entry's source text inside the `relations:` value.
+    /// Span of this entry's `to:` target text (the whole entry when the
+    /// target is somehow spanless).
     pub span: Span,
 }
 
@@ -201,10 +202,10 @@ impl std::fmt::Display for MetaErrorKind {
 
 /// Convert a parsed frontmatter node into typed STA metadata.
 ///
-/// `source` is the full document text; it is used to attach precise spans to
-/// entries nested inside `relations:` and `related:` lists, which the
-/// top-level [`morg_parser::FrontmatterEntry`] spans do not cover.
-pub fn parse_note_meta(fm: Option<&Frontmatter>, source: &str) -> (NoteMeta, Vec<MetaError>) {
+/// Spans come straight off the parser's [`FrontmatterNode`] tree, so
+/// entries nested inside `relations:` and `related:` lists (and their
+/// individual keys and values) are located exactly.
+pub fn parse_note_meta(fm: Option<&Frontmatter>) -> (NoteMeta, Vec<MetaError>) {
     let Some(fm) = fm else {
         return (NoteMeta::Plain, Vec::new());
     };
@@ -215,8 +216,6 @@ pub fn parse_note_meta(fm: Option<&Frontmatter>, source: &str) -> (NoteMeta, Vec
 
     let mut cx = Cx {
         fm,
-        source,
-        index: LineIndex::new(source),
         errors: Vec::new(),
     };
 
@@ -282,8 +281,6 @@ pub fn split_target(to: &str) -> (String, Option<String>) {
 /// Conversion context: the frontmatter node plus error accumulation.
 struct Cx<'a> {
     fm: &'a Frontmatter,
-    source: &'a str,
-    index: LineIndex<'a>,
     errors: Vec<MetaError>,
 }
 
@@ -304,13 +301,17 @@ impl Cx<'_> {
         self.fm.data.as_mapping_get(key)
     }
 
-    /// Build an absolute span over `source[start..end]`.
-    fn span_at(&self, start: usize, end: usize) -> Span {
-        let lc = self
-            .index
-            .line_col(start)
-            .unwrap_or(morg_parser::LineCol { line: 1, col: 1 });
-        Span::new(start, end, lc.line, lc.col)
+    /// The span-annotated node of a top-level value.
+    fn node(&self, key: &str) -> Option<&FrontmatterNode> {
+        self.fm.entry(key).map(|e| &e.value)
+    }
+
+    /// Spans of a top-level sequence's items, in document order.
+    fn item_spans(&self, key: &str) -> Vec<Span> {
+        self.node(key)
+            .and_then(FrontmatterNode::items)
+            .map(|items| items.iter().map(|n| n.span).collect())
+            .unwrap_or_default()
     }
 
     /// Flag any top-level key outside the schema for `kind`.
@@ -443,22 +444,26 @@ impl Cx<'_> {
             );
             return Vec::new();
         };
+        let items: Vec<Option<String>> = seq
+            .iter()
+            .map(|item| item.as_str().map(str::to_owned))
+            .collect();
+        let spans = self.item_spans(key);
+        let fallback = self.value_span(key);
         let mut out = Vec::new();
-        let mut bad = false;
-        for item in seq {
-            match item.as_str() {
-                Some(s) => out.push(s.to_owned()),
-                None => bad = true,
+        for (i, item) in items.into_iter().enumerate() {
+            match item {
+                Some(s) => out.push(s),
+                None => {
+                    self.push(
+                        MetaErrorKind::TypeMismatch {
+                            field: format!("{key}[{i}]"),
+                            expected: "a string",
+                        },
+                        spans.get(i).copied().or(fallback),
+                    );
+                }
             }
-        }
-        if bad {
-            self.push(
-                MetaErrorKind::TypeMismatch {
-                    field: key.into(),
-                    expected: "a list of strings",
-                },
-                self.value_span(key),
-            );
         }
         out
     }
@@ -482,23 +487,6 @@ impl Cx<'_> {
             .collect()
     }
 
-    /// Find `needle`'s next occurrence inside the value text of `key`,
-    /// advancing `cursor` (an offset relative to the value span). Items of a
-    /// YAML list appear in source order, so a sequential scan attributes
-    /// each occurrence to the right item. Falls back to the whole value span.
-    fn sub_span(&self, key: &str, needle: &str, cursor: &mut usize) -> Option<Span> {
-        let span = self.value_span(key)?;
-        let slice = self.source.get(span.start..span.end)?;
-        match slice.get(*cursor..).and_then(|rest| rest.find(needle)) {
-            Some(rel) => {
-                let start = span.start + *cursor + rel;
-                *cursor += rel + needle.len();
-                Some(self.span_at(start, start + needle.len()))
-            }
-            None => Some(span),
-        }
-    }
-
     fn related_field(&mut self) -> Vec<RelatedDecl> {
         let Some(v) = self.value("related") else {
             return Vec::new();
@@ -513,27 +501,24 @@ impl Cx<'_> {
             );
             return Vec::new();
         };
-        let seq: Vec<_> = seq.to_vec();
+        let items: Vec<Option<String>> = seq
+            .iter()
+            .map(|item| item.as_str().map(str::to_owned))
+            .collect();
+        let spans = self.item_spans("related");
+        let fallback = self.value_span("related").unwrap_or(self.fm.span);
         let mut out = Vec::new();
-        let mut cursor = 0usize;
-        for item in &seq {
-            match item.as_str() {
-                Some(s) => {
-                    let span = self
-                        .sub_span("related", s, &mut cursor)
-                        .or(self.value_span("related"));
-                    out.push(RelatedDecl {
-                        to: s.to_owned(),
-                        span: span.unwrap_or(self.fm.span),
-                    });
-                }
+        for (i, item) in items.into_iter().enumerate() {
+            let span = spans.get(i).copied().unwrap_or(fallback);
+            match item {
+                Some(to) => out.push(RelatedDecl { to, span }),
                 None => {
                     self.push(
                         MetaErrorKind::TypeMismatch {
-                            field: "related".into(),
-                            expected: "a list of note ids",
+                            field: format!("related[{i}]"),
+                            expected: "a note id",
                         },
-                        self.value_span("related"),
+                        Some(span),
                     );
                 }
             }
@@ -556,35 +541,68 @@ impl Cx<'_> {
             return Vec::new();
         };
         let seq: Vec<_> = seq.to_vec();
-        let whole = self.value_span("relations");
+        let whole = self.value_span("relations").unwrap_or(self.fm.span);
+
+        // Per-entry node spans: the whole entry, its `to` / `stance` / `op`
+        // values, and the key spans of any keys outside the schema.
+        struct EntrySpans {
+            item: Span,
+            to: Option<Span>,
+            stance: Option<Span>,
+            op: Option<Span>,
+            unknown_keys: Vec<(String, Span)>,
+        }
+        let entry_spans: Vec<EntrySpans> = self
+            .node("relations")
+            .and_then(FrontmatterNode::items)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| EntrySpans {
+                        item: item.span,
+                        to: item.entry("to").map(|e| e.value.span),
+                        stance: item.entry("stance").map(|e| e.value.span),
+                        op: item.entry("op").map(|e| e.value.span),
+                        unknown_keys: match &item.kind {
+                            FrontmatterNodeKind::Map(entries) => entries
+                                .iter()
+                                .filter(|e| !RELATION_KEYS.contains(&e.key.as_str()))
+                                .map(|e| (e.key.clone(), e.key_span))
+                                .collect(),
+                            _ => Vec::new(),
+                        },
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let mut out = Vec::new();
-        let mut cursor = 0usize;
         for (i, item) in seq.iter().enumerate() {
-            let Some(map) = item.as_mapping() else {
+            let spans = entry_spans.get(i);
+            let item_span = spans.map_or(whole, |s| s.item);
+            if item.as_mapping().is_none() {
                 self.push(
                     MetaErrorKind::TypeMismatch {
                         field: format!("relations[{i}]"),
                         expected: "a mapping with `to` and `stance`",
                     },
-                    whole,
+                    Some(item_span),
                 );
                 continue;
-            };
-
-            for key in map.keys() {
-                if let Some(k) = key.as_str()
-                    && !RELATION_KEYS.contains(&k)
-                {
-                    self.push(
-                        MetaErrorKind::UnknownKey {
-                            key: format!("relations[{i}].{k}"),
-                            kind: NoteKind::Argument,
-                        },
-                        whole,
-                    );
-                }
             }
 
+            let unknown_keys = spans.map(|s| s.unknown_keys.clone()).unwrap_or_default();
+            for (k, key_span) in unknown_keys {
+                self.push(
+                    MetaErrorKind::UnknownKey {
+                        key: format!("relations[{i}].{k}"),
+                        kind: NoteKind::Argument,
+                    },
+                    Some(key_span),
+                );
+            }
+
+            let to_span = spans.and_then(|s| s.to).unwrap_or(item_span);
             let to = match item.as_mapping_get("to") {
                 Some(v) => match v.as_str() {
                     Some(s) => Some(s.to_owned()),
@@ -594,7 +612,7 @@ impl Cx<'_> {
                                 field: format!("relations[{i}].to"),
                                 expected: "a string",
                             },
-                            whole,
+                            Some(to_span),
                         );
                         None
                     }
@@ -604,19 +622,16 @@ impl Cx<'_> {
                         MetaErrorKind::MissingField {
                             field: format!("relations[{i}].to"),
                         },
-                        whole,
+                        Some(item_span),
                     );
                     None
                 }
             };
 
-            // Attribute a span to this entry by finding its `to:` text.
-            let span = to
-                .as_deref()
-                .and_then(|t| self.sub_span("relations", t, &mut cursor))
-                .or(whole)
-                .unwrap_or(self.fm.span);
+            // The entry's representative span is its `to:` target text.
+            let span = to_span;
 
+            let stance_span = spans.and_then(|s| s.stance).unwrap_or(item_span);
             let stance = match item.as_mapping_get("stance").and_then(|v| v.as_str()) {
                 Some(s) => match Stance::parse(s) {
                     Some(stance) => Some(stance),
@@ -627,7 +642,7 @@ impl Cx<'_> {
                                 value: s.to_owned(),
                                 allowed: &Stance::ALL,
                             },
-                            Some(span),
+                            Some(stance_span),
                         );
                         None
                     }
@@ -637,12 +652,13 @@ impl Cx<'_> {
                         MetaErrorKind::MissingField {
                             field: format!("relations[{i}].stance"),
                         },
-                        Some(span),
+                        Some(item_span),
                     );
                     None
                 }
             };
 
+            let op_span = spans.and_then(|s| s.op).unwrap_or(item_span);
             let op = match item.as_mapping_get("op") {
                 Some(v) => match v.as_str().and_then(BloomOp::parse) {
                     Some(op) => Some(op),
@@ -653,7 +669,7 @@ impl Cx<'_> {
                                 value: v.as_str().unwrap_or("<non-string>").to_owned(),
                                 allowed: &BloomOp::ALL,
                             },
-                            Some(span),
+                            Some(op_span),
                         );
                         None
                     }

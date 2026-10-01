@@ -44,8 +44,11 @@ pub struct Analysis {
 }
 
 /// Type the frontmatter and extract the facts of one parsed document.
-pub fn analyze_document(source: &str, doc: &Document) -> Analysis {
-    let (meta, meta_errors) = parse_note_meta(doc.frontmatter.as_ref(), source);
+///
+/// All diagnostics carry spans taken from the parser's node tree, so the
+/// original source text is not needed here.
+pub fn analyze_document(doc: &Document) -> Analysis {
+    let (meta, meta_errors) = parse_note_meta(doc.frontmatter.as_ref());
     let facts = extract_facts(doc, &meta);
     Analysis {
         meta,

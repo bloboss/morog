@@ -57,7 +57,7 @@ pub fn run(paths: Vec<PathBuf>, format: &str, bib_args: &BibArgs) -> ExitCode {
             }
         };
         let parsed = morg_parser::parse_document(&source);
-        let analysis = morog_sema::analyze_document(&source, &parsed.document);
+        let analysis = morog_sema::analyze_document(&parsed.document);
         diagnostics.extend(morog_sema::lint_file(&path, &analysis, &config, bib));
         analyses.push((path, analysis));
     }

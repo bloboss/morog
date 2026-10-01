@@ -11,7 +11,7 @@ use morog_sema::{
 
 fn analyze(source: &str) -> Analysis {
     let result = morg_parser::parse_document(source);
-    analyze_document(source, &result.document)
+    analyze_document(&result.document)
 }
 
 fn lint(source: &str) -> Vec<morog_sema::Diagnostic> {
