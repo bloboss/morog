@@ -11,22 +11,21 @@
 //! Citation keys (`[@key]`) are owned by the bibliography and refused too —
 //! and since source ids can't change, cite references never need rewriting.
 
-use std::collections::BTreeMap;
-
 use lsp_server::ErrorCode;
 use lsp_types::{
-    DocumentChangeOperation, DocumentChanges, OneOf, OptionalVersionedTextDocumentIdentifier,
-    PrepareRenameResponse, RenameFile, RenameParams, ResourceOp, TextDocumentEdit,
-    TextDocumentPositionParams, TextEdit, WorkspaceEdit,
+    DocumentChangeOperation, PrepareRenameResponse, RenameFile, RenameParams, ResourceOp,
+    TextDocumentPositionParams, WorkspaceEdit,
 };
 use morg_parser::LineIndex;
 use morog_sema::{NoteKind, RelationKind, is_slug};
 
 use crate::analysis::cursor::{self, CursorContext};
-use crate::handlers::{FilePosition, HandlerError, file_position, file_text, file_uri};
+use crate::handlers::{
+    Edits, FilePosition, HandlerError, file_position, file_text, file_uri, id_pos_in_ref,
+    workspace_edit,
+};
 use crate::state::Snapshot;
 use crate::to_proto;
-use crate::vfs::FileId;
 
 /// What a rename at some position would do.
 enum RenameTarget {
@@ -171,75 +170,6 @@ fn refuse_source(snapshot: &Snapshot, id: &str) -> Result<(), HandlerError> {
     Ok(())
 }
 
-/// Where a reference slice mentions its target id: after `(id:` for inline
-/// links, at the (possibly quoted) start for frontmatter `to:` values.
-fn id_pos_in_ref(slice: &str, target_id: &str) -> Option<usize> {
-    if let Some(p) = slice.find("(id:") {
-        let pos = p + 4;
-        return slice[pos..].starts_with(target_id).then_some(pos);
-    }
-    let pos = slice.len() - slice.trim_start_matches(['"', '\'']).len();
-    slice[pos..].starts_with(target_id).then_some(pos)
-}
-
-/// Byte-range edits per file, turned into a `WorkspaceEdit` at the end.
-#[derive(Default)]
-struct Edits {
-    by_file: BTreeMap<FileId, Vec<(usize, usize, String)>>,
-}
-
-impl Edits {
-    fn push(&mut self, file: FileId, start: usize, end: usize, new_text: String) {
-        self.by_file
-            .entry(file)
-            .or_default()
-            .push((start, end, new_text));
-    }
-
-    /// Convert to `documentChanges`, appending `extra` operations (file
-    /// renames) after the text edits.
-    fn into_workspace_edit(
-        self,
-        snapshot: &Snapshot,
-        extra: Vec<DocumentChangeOperation>,
-    ) -> Result<WorkspaceEdit, HandlerError> {
-        let mut operations = Vec::with_capacity(self.by_file.len() + extra.len());
-        for (file, mut edits) in self.by_file {
-            let (Some(uri), Some(text)) = (file_uri(snapshot, file), file_text(snapshot, file))
-            else {
-                continue;
-            };
-            let index = LineIndex::new(&text);
-            edits.sort_by_key(|&(start, ..)| start);
-            edits.dedup();
-            let edits = edits
-                .into_iter()
-                .map(|(start, end, new_text)| {
-                    OneOf::Left(TextEdit {
-                        range: to_proto::range(
-                            &text,
-                            &index,
-                            morg_parser::Span::new(start, end, 1, 1),
-                            snapshot.encoding,
-                        ),
-                        new_text,
-                    })
-                })
-                .collect();
-            operations.push(DocumentChangeOperation::Edit(TextDocumentEdit {
-                text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
-                edits,
-            }));
-        }
-        operations.extend(extra);
-        Ok(WorkspaceEdit {
-            changes: None,
-            document_changes: Some(DocumentChanges::Operations(operations)),
-            change_annotations: None,
-        })
-    }
-}
-
 /// Rename a note id across the vault.
 fn rename_id(snapshot: &Snapshot, old: &str, new: &str) -> Result<WorkspaceEdit, HandlerError> {
     if !is_slug(new) {
@@ -299,7 +229,9 @@ fn rename_id(snapshot: &Snapshot, old: &str, new: &str) -> Result<WorkspaceEdit,
         )));
     }
 
-    edits.into_workspace_edit(snapshot, operations)
+    let mut all = edits.into_operations(snapshot);
+    all.extend(operations);
+    Ok(workspace_edit(all))
 }
 
 /// Rename a block anchor of `note_id`: the `#anchor name` declaration and
@@ -376,7 +308,7 @@ fn rename_anchor(
         }
     }
 
-    edits.into_workspace_edit(snapshot, Vec::new())
+    Ok(workspace_edit(edits.into_operations(snapshot)))
 }
 
 /// The byte range of `old` inside a block slice's `#anchor old` tag.
@@ -401,7 +333,7 @@ fn anchor_name_range(slice: &str, old: &str) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use expect_test::{Expect, expect};
-    use lsp_types::WorkDoneProgressParams;
+    use lsp_types::{DocumentChanges, OneOf, WorkDoneProgressParams};
 
     use super::*;
     use crate::handlers::test_support::{fmt_position, snapshot};

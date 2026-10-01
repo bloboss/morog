@@ -7,6 +7,7 @@
 //!
 //! - cold start (index table scan → analysis, no reparse): budget < 1 s
 //! - keystroke → publishDiagnostics, net of the 150 ms debounce: < 30 ms
+//! - completion round trip: < 20 ms
 
 mod support;
 
@@ -121,6 +122,48 @@ fn bench_cold_start_and_keystroke() {
         samples.last().unwrap(),
         topic.file_name().unwrap().to_string_lossy(),
         text.len(),
+    );
+
+    // Completion round trip (plan §5.7: < 20 ms). Target completion is the
+    // expensive path: it fuzzy-scans every note in the vault. The cursor
+    // goes at the end of the appended line; typing `(id:x` first makes the
+    // line a link-target context.
+    let lines = text.matches('\n').count();
+    client.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": { "uri": uri, "version": 100 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": lines, "character": 0 },
+                    "end": { "line": lines, "character": 0 },
+                },
+                "text": "see [x](id:a",
+            }],
+        }),
+    );
+    let mut samples = Vec::new();
+    let mut items = 0;
+    for _ in 0..10 {
+        let t = Instant::now();
+        let completion = client.request(
+            "textDocument/completion",
+            json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": lines, "character": 12 },
+            }),
+        );
+        samples.push(t.elapsed());
+        items = completion.as_array().map_or(0, Vec::len);
+    }
+    samples.sort_unstable();
+    eprintln!(
+        "completion round trip over {} samples: min {:?}, median {:?}, max {:?} \
+         ({items} items)  [budget < 20 ms]",
+        samples.len(),
+        samples.first().unwrap(),
+        samples[samples.len() / 2],
+        samples.last().unwrap(),
     );
 
     client.shutdown();

@@ -5,20 +5,27 @@
 //! parsed this session (open buffers included), and lazily from disk for
 //! facts-only cold-start entries — never a reparse.
 
+pub(crate) mod code_action;
 pub(crate) mod completion;
 pub(crate) mod document_symbol;
 pub(crate) mod goto_definition;
 pub(crate) mod hover;
 pub(crate) mod inlay_hint;
+pub(crate) mod neighbourhood;
 pub(crate) mod references;
 pub(crate) mod rename;
 pub(crate) mod semantic_tokens;
 pub(crate) mod workspace_symbol;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use lsp_server::ErrorCode;
-use lsp_types::{Location, TextDocumentPositionParams, Url};
+use lsp_types::{
+    DocumentChangeOperation, DocumentChanges, Location, OneOf,
+    OptionalVersionedTextDocumentIdentifier, TextDocumentEdit, TextDocumentPositionParams,
+    TextEdit, Url, WorkspaceEdit,
+};
 use morg_parser::{LineIndex, Span};
 
 use crate::analysis::FileAnalysis;
@@ -127,6 +134,92 @@ pub(crate) fn anchor_block<'a>(
         .find(|block| block.anchor.as_deref() == Some(anchor))
 }
 
+/// The first `n` whitespace-separated words, with an ellipsis when cut.
+pub(crate) fn first_words(text: &str, n: usize) -> String {
+    let mut words = text.split_whitespace();
+    let mut out: Vec<&str> = words.by_ref().take(n).collect();
+    let cut = words.next().is_some();
+    if cut && let Some(last) = out.last_mut() {
+        *last = last.trim_end_matches(|c: char| c.is_ascii_punctuation());
+    }
+    let mut out = out.join(" ");
+    if cut {
+        out.push('…');
+    }
+    out
+}
+
+/// Where a reference slice mentions its target id: after `(id:` for inline
+/// links, at the (possibly quoted) start for frontmatter `to:` values.
+/// Shared by rename and the code actions that rewrite relation targets.
+pub(crate) fn id_pos_in_ref(slice: &str, target_id: &str) -> Option<usize> {
+    if let Some(p) = slice.find("(id:") {
+        let pos = p + 4;
+        return slice[pos..].starts_with(target_id).then_some(pos);
+    }
+    let pos = slice.len() - slice.trim_start_matches(['"', '\'']).len();
+    slice[pos..].starts_with(target_id).then_some(pos)
+}
+
+/// Byte-range edits accumulated per file, converted to protocol
+/// `documentChanges` at the end. Shared by rename and the code actions.
+#[derive(Default)]
+pub(crate) struct Edits {
+    by_file: BTreeMap<FileId, Vec<(usize, usize, String)>>,
+}
+
+impl Edits {
+    pub(crate) fn push(&mut self, file: FileId, start: usize, end: usize, new_text: String) {
+        self.by_file
+            .entry(file)
+            .or_default()
+            .push((start, end, new_text));
+    }
+
+    /// One `TextDocumentEdit` operation per touched file, edits in document
+    /// order.
+    pub(crate) fn into_operations(self, snapshot: &Snapshot) -> Vec<DocumentChangeOperation> {
+        let mut operations = Vec::with_capacity(self.by_file.len());
+        for (file, mut edits) in self.by_file {
+            let (Some(uri), Some(text)) = (file_uri(snapshot, file), file_text(snapshot, file))
+            else {
+                continue;
+            };
+            let index = LineIndex::new(&text);
+            edits.sort_by_key(|&(start, ..)| start);
+            edits.dedup();
+            let edits = edits
+                .into_iter()
+                .map(|(start, end, new_text)| {
+                    OneOf::Left(TextEdit {
+                        range: to_proto::range(
+                            &text,
+                            &index,
+                            Span::new(start, end, 1, 1),
+                            snapshot.encoding,
+                        ),
+                        new_text,
+                    })
+                })
+                .collect();
+            operations.push(DocumentChangeOperation::Edit(TextDocumentEdit {
+                text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
+                edits,
+            }));
+        }
+        operations
+    }
+}
+
+/// A `WorkspaceEdit` from `documentChanges` operations.
+pub(crate) fn workspace_edit(operations: Vec<DocumentChangeOperation>) -> WorkspaceEdit {
+    WorkspaceEdit {
+        changes: None,
+        document_changes: Some(DocumentChanges::Operations(operations)),
+        change_annotations: None,
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     //! Fixture support for handler unit tests: build a snapshot from
@@ -202,6 +295,7 @@ pub(crate) mod test_support {
             Snapshot {
                 analysis,
                 encoding: PositionEncoding::Utf8,
+                vault_root: Arc::from(Path::new("/v")),
             },
             params,
         )

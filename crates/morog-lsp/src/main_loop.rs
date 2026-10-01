@@ -142,6 +142,13 @@ fn server_capabilities(encoding: PositionEncoding) -> ServerCapabilities {
             prepare_provider: Some(true),
             work_done_progress_options: Default::default(),
         })),
+        code_action_provider: Some(lsp_types::CodeActionProviderCapability::Simple(true)),
+        execute_command_provider: Some(lsp_types::ExecuteCommandOptions {
+            commands: vec![RESEARCH_NEW_COMMAND.to_owned()],
+            ..Default::default()
+        }),
+        // The custom request of plan §5.6, advertised for feature probing.
+        experimental: Some(serde_json::json!({ "morog/neighbourhood": true })),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         references_provider: Some(lsp_types::OneOf::Left(true)),
         document_symbol_provider: Some(lsp_types::OneOf::Left(true)),
@@ -260,6 +267,39 @@ fn on_request(state: &mut GlobalState, request: Request) {
             ),
             handlers::completion::handle
         ),
+        r::CodeActionRequest::METHOD => handle!(
+            r::CodeActionRequest,
+            |p: &lsp_types::CodeActionParams| Some(p.text_document.uri.clone()),
+            handlers::code_action::handle
+        ),
+        // Custom morog/neighbourhood (plan §5.6): the subgraph around a
+        // note, from the xref — same worker path as the standard requests.
+        "morog/neighbourhood" => {
+            match serde_json::from_value::<handlers::neighbourhood::NeighbourhoodParams>(
+                request.params,
+            ) {
+                Ok(params) => state.dispatch(request.id, None, move |snapshot| {
+                    handlers::neighbourhood::handle(snapshot, params)
+                }),
+                Err(e) => state.respond(Response::new_err(
+                    request.id,
+                    ErrorCode::InvalidParams as i32,
+                    e.to_string(),
+                )),
+            }
+        }
+        // workspace/executeCommand mutates the vault, so it runs right here
+        // on the main thread (a single file write) rather than on a worker.
+        r::ExecuteCommand::METHOD => {
+            match serde_json::from_value::<lsp_types::ExecuteCommandParams>(request.params) {
+                Ok(params) => execute_command(state, request.id, params),
+                Err(e) => state.respond(Response::new_err(
+                    request.id,
+                    ErrorCode::InvalidParams as i32,
+                    e.to_string(),
+                )),
+            }
+        }
         r::PrepareRenameRequest::METHOD => handle!(
             r::PrepareRenameRequest,
             |p: &lsp_types::TextDocumentPositionParams| Some(p.text_document.uri.clone()),
@@ -323,6 +363,120 @@ fn on_request(state: &mut GlobalState, request: Request) {
             });
         }
     }
+}
+
+/// The one command of plan §5.6: `morog.research.new`.
+pub(crate) const RESEARCH_NEW_COMMAND: &str = "morog.research.new";
+
+/// `workspace/executeCommand`: create a note and answer its URI.
+fn execute_command(
+    state: &mut GlobalState,
+    id: lsp_server::RequestId,
+    params: lsp_types::ExecuteCommandParams,
+) {
+    if params.command != RESEARCH_NEW_COMMAND {
+        state.respond(Response::new_err(
+            id,
+            ErrorCode::InvalidParams as i32,
+            format!("unknown command `{}`", params.command),
+        ));
+        return;
+    }
+    match research_new(state, &params.arguments) {
+        Ok(value) => state.respond(Response::new_ok(id, value)),
+        Err(message) => state.respond(Response::new_err(
+            id,
+            ErrorCode::InvalidParams as i32,
+            message,
+        )),
+    }
+}
+
+/// `morog.research.new {kind, title}`: the `morog research` creation path
+/// (kind and title; for a source the title **is** the citation key), writing
+/// `<vault>/<id>.md` and returning `{ "uri": … }`.
+fn research_new(
+    state: &mut GlobalState,
+    arguments: &[serde_json::Value],
+) -> Result<serde_json::Value, String> {
+    #[derive(serde::Deserialize)]
+    struct Args {
+        kind: String,
+        title: String,
+    }
+    let args: Args = match arguments {
+        [object] => serde_json::from_value(object.clone()).map_err(|e| e.to_string())?,
+        [kind, title] => Args {
+            kind: kind.as_str().unwrap_or_default().to_owned(),
+            title: title.as_str().unwrap_or_default().to_owned(),
+        },
+        _ => return Err("expected arguments: {\"kind\": …, \"title\": …}".to_owned()),
+    };
+    let kind = morog_sema::NoteKind::parse(&args.kind)
+        .ok_or_else(|| format!("unknown kind `{}`", args.kind))?;
+
+    let (id, content) = match kind {
+        morog_sema::NoteKind::Source => {
+            let key = args.title.as_str();
+            if !morog_sema::is_slug(key) {
+                return Err(format!("`{key}` is not a slug-shaped citation key"));
+            }
+            let bib = &state.analysis.bib;
+            let entry = bib.get(key);
+            if entry.is_none() && !bib.is_empty() {
+                return Err(format!(
+                    "citation key `{key}` not found in the bibliography"
+                ));
+            }
+            let title = entry
+                .and_then(|e| e.meta.as_ref())
+                .and_then(|m| m.title.clone());
+            (
+                key.to_owned(),
+                crate::research::source_note(key, title.as_deref()),
+            )
+        }
+        morog_sema::NoteKind::Topic => {
+            let id = crate::research::slugify(&args.title)
+                .ok_or_else(|| format!("cannot derive a slug id from `{}`", args.title))?;
+            let content = crate::research::topic_note(&id, &args.title);
+            (id, content)
+        }
+        morog_sema::NoteKind::Argument => {
+            let id = crate::research::slugify(&args.title)
+                .ok_or_else(|| format!("cannot derive a slug id from `{}`", args.title))?;
+            let content = crate::research::argument_note(&id, &args.title);
+            (id, content)
+        }
+    };
+
+    if state.analysis.xref.by_id.contains_key(id.as_str()) {
+        return Err(format!("id `{id}` is already declared in the vault"));
+    }
+    let path = state.config.vault_root.join(format!("{id}.md"));
+    let uri = lsp_types::Url::from_file_path(&path)
+        .map_err(|()| format!("vault path `{}` is not absolute", path.display()))?;
+
+    // Like `morog research`: never overwrite.
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create_new(true);
+    open.open(&path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, content.as_bytes()))
+        .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+
+    // Make the note visible to requests immediately; the indexer writes
+    // SQLite in the background (it remains the sole writer).
+    let fa = crate::analysis::FileAnalysis::parse(
+        &path,
+        content.into(),
+        &state.config.lint,
+        state.bib_store(),
+    );
+    state.set_indexed_file(&path, fa);
+    if let Some(indexer) = &state.indexer {
+        indexer.notify_changed(path);
+    }
+    Ok(serde_json::json!({ "uri": uri }))
 }
 
 fn on_notification(state: &mut GlobalState, notification: Notification) {

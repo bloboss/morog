@@ -14,9 +14,11 @@
 //! - [`state`], [`diagnostics`], [`main_loop`] — the single-threaded event
 //!   loop over `lsp-server`, document sync (plan §5.3), and debounced
 //!   `publishDiagnostics` with the full `sta::*` set (milestone M7 L1).
-//!
-//! The embedded indexer and the L2 navigation handlers build on these in
-//! the remaining layers of milestone M7.
+//! - [`handlers`] — the full M7 request surface: navigation (L2),
+//!   completion, inlay hints, and semantic tokens (L3), rename, code
+//!   actions, and the custom `morog/neighbourhood` subgraph request (L4) —
+//!   plus the `morog.research.new` command, whose note serialization lives
+//!   in [`research`].
 
 pub mod analysis;
 pub mod config;
@@ -25,6 +27,7 @@ mod from_proto;
 mod handlers;
 mod indexer;
 pub mod main_loop;
+mod research;
 mod state;
 mod to_proto;
 pub mod vfs;

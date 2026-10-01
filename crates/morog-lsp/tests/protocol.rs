@@ -353,6 +353,169 @@ fn rename_produces_a_multi_file_workspace_edit() {
 }
 
 #[test]
+fn code_action_quickfix_flow() {
+    let mut client = Client::start(&["utf-8"], json!({ "vaultRoot": "/vault" }));
+    let uri = "file:///vault/topic.md";
+
+    // An uncited block produces the diagnostic …
+    client.open(
+        uri,
+        1,
+        "---\nid: sla\nkind: topic\n---\n\nAn uncited paragraph.\n",
+    );
+    let diags = client.recv_diagnostics(uri);
+    assert_eq!(codes(&diags), ["sta::uncited-block"]);
+    let diag = diags["diagnostics"][0].clone();
+
+    // … whose range, fed back as a code-action context, yields the
+    // quick-fix with the diagnostic attached.
+    let actions = client.request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": diag["range"],
+            "context": { "diagnostics": [diag] },
+        }),
+    );
+    let action = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["title"] == "Mark block #mine")
+        .expect("the uncited-block quick-fix is offered");
+    assert_eq!(action["kind"], "quickfix");
+    assert_eq!(action["diagnostics"][0]["code"], "sta::uncited-block");
+    let ops = action["edit"]["documentChanges"].as_array().unwrap();
+    let edit = &ops[0]["edits"][0];
+    assert_eq!(edit["newText"], " #mine");
+
+    // Applying the edit clears the diagnostic.
+    client.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "range": edit["range"], "text": edit["newText"] }],
+        }),
+    );
+    let diags = client.recv_diagnostics(uri);
+    assert_eq!(codes(&diags), Vec::<String>::new());
+
+    client.shutdown();
+}
+
+#[test]
+fn execute_command_creates_a_note_and_returns_its_uri() {
+    // The command writes to disk, so this test needs a real vault root.
+    let vault = std::env::temp_dir().join(format!(
+        "morog-lsp-exec-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&vault).unwrap();
+    let vault = vault.canonicalize().unwrap();
+
+    let mut client = Client::start(&["utf-8"], json!({ "vaultRoot": vault.to_str().unwrap() }));
+    let response = client.request(
+        "workspace/executeCommand",
+        json!({
+            "command": "morog.research.new",
+            "arguments": [{ "kind": "topic", "title": "Specific leaf area" }],
+        }),
+    );
+    let uri = response["uri"].as_str().unwrap();
+    assert!(uri.ends_with("/specific-leaf-area.md"), "{uri}");
+    let path = lsp_types::Url::parse(uri).unwrap().to_file_path().unwrap();
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(content.contains("kind: topic"), "{content}");
+    assert!(
+        content.contains("title: \"Specific leaf area\""),
+        "{content}"
+    );
+
+    // The new note is visible to requests immediately.
+    let symbols = client.request("workspace/symbol", json!({ "query": "leaf" }));
+    assert_eq!(symbols[0]["name"], "topic specific-leaf-area");
+
+    // Duplicate creation is refused.
+    client.next_id += 1;
+    let id = RequestId::from(client.next_id);
+    client
+        .connection
+        .sender
+        .send(Message::Request(Request::new(
+            id.clone(),
+            "workspace/executeCommand".to_owned(),
+            json!({
+                "command": "morog.research.new",
+                "arguments": [{ "kind": "topic", "title": "Specific leaf area" }],
+            }),
+        )))
+        .unwrap();
+    loop {
+        if let Message::Response(response) = client.recv() {
+            assert_eq!(response.id, id);
+            let error = response.response_result.expect_err("duplicate must fail");
+            assert!(
+                error.message.contains("already declared"),
+                "{}",
+                error.message
+            );
+            break;
+        }
+    }
+
+    client.shutdown();
+    let _ = std::fs::remove_dir_all(&vault);
+}
+
+#[test]
+fn neighbourhood_returns_the_subgraph() {
+    let mut client = Client::start(&["utf-8"], json!({ "vaultRoot": "/vault" }));
+    client.open(
+        "file:///vault/sla.md",
+        1,
+        "---\nid: sla\nkind: topic\ntitle: \"SLA\"\nrelated: [lmr]\n---\n\nE [@w]. #anchor e1\n",
+    );
+    client.open(
+        "file:///vault/lmr.md",
+        1,
+        "---\nid: lmr\nkind: topic\ntitle: \"LMR\"\n---\n",
+    );
+    client.open(
+        "file:///vault/arg.md",
+        1,
+        "---\nid: arg\nkind: argument\nthesis: \"t\"\nrelations:\n  - { to: sla#e1, stance: supports, op: analyze }\n---\n",
+    );
+
+    let graph = client.request(
+        "morog/neighbourhood",
+        json!({ "uri": "file:///vault/sla.md", "hops": 1 }),
+    );
+    assert_eq!(graph["root"], "sla");
+    let node_ids: Vec<&str> = graph["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| node["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(node_ids, ["arg", "lmr", "sla"]);
+    let edges = graph["edges"].as_array().unwrap();
+    assert_eq!(edges.len(), 2);
+    assert_eq!(edges[0]["src"], "arg");
+    assert_eq!(edges[0]["kind"], "argues");
+    assert_eq!(edges[0]["stance"], "supports");
+    assert_eq!(edges[0]["op"], "analyze");
+    assert_eq!(edges[1]["src"], "sla");
+    assert_eq!(edges[1]["dst"], "lmr");
+    assert_eq!(edges[1]["kind"], "related");
+
+    client.shutdown();
+}
+
+#[test]
 fn completion_over_open_documents() {
     let mut client = Client::start(&["utf-8"], json!({ "vaultRoot": "/vault" }));
     let sla_uri = "file:///vault/sla.md";

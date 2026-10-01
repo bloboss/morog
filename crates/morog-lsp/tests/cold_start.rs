@@ -145,6 +145,36 @@ fn cold_start_from_index_over_the_fixture_vault() {
     // "spec" is a subsequence of both ids; sources never appear.
     assert_eq!(labels, ["specific-leaf-area", "two-shape-classes"]);
 
+    // morog/neighbourhood over cold facts: the subgraph around the topic.
+    // Dangling citekeys (no source note) stay out, like the DOT exporter.
+    let graph = client.request(
+        "morog/neighbourhood",
+        json!({ "id": "specific-leaf-area", "hops": 1 }),
+    );
+    let node_ids: Vec<&str> = graph["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| node["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        node_ids,
+        [
+            "broken-targets",
+            "leaf-mass-ratio",
+            "specific-leaf-area",
+            "two-shape-classes"
+        ]
+    );
+    assert!(
+        graph["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|edge| node_ids.contains(&edge["src"].as_str().unwrap())
+                && node_ids.contains(&edge["dst"].as_str().unwrap()))
+    );
+
     // Opening the broken argument yields the vault-level diagnostics
     // computed against cold-start facts.
     let broken_path = vault.join("arguments/broken-targets.md");

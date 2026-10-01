@@ -37,6 +37,8 @@ pub(crate) enum Task {
 pub(crate) struct Snapshot {
     pub analysis: Analysis,
     pub encoding: PositionEncoding,
+    /// Where code actions and commands create new notes (plan §5.6).
+    pub vault_root: Arc<Path>,
 }
 
 pub(crate) struct GlobalState {
@@ -74,7 +76,7 @@ impl GlobalState {
 
     /// The bibliography as a lint store; `None` while empty so the
     /// bibliography-backed lints are skipped rather than all-firing.
-    fn bib_store(&self) -> Option<&dyn BibStore> {
+    pub(crate) fn bib_store(&self) -> Option<&dyn BibStore> {
         (!self.analysis.bib.is_empty()).then_some(&*self.analysis.bib as &dyn BibStore)
     }
 
@@ -353,6 +355,7 @@ impl GlobalState {
         let snapshot = Snapshot {
             analysis: self.analysis.clone(),
             encoding: self.encoding,
+            vault_root: Arc::from(self.config.vault_root.as_path()),
         };
         let task_tx = self.task_tx.clone();
         rayon::spawn(move || {
