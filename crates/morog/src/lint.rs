@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use morog_bib::BibStore;
-use morog_sema::{Analysis, Diagnostic, LintConfig, Severity, VaultNote};
+use morog_sema::{Analysis, Diagnostic, Severity, VaultNote};
 
 use crate::cli::BibArgs;
 
@@ -57,7 +57,21 @@ pub fn run_pass(
     files.sort();
     files.dedup();
 
-    let config = LintConfig::default();
+    // `[lint]` settings: the vault root for the `.morog.toml` lookup is the
+    // first directory argument (falling back to the current directory when
+    // only files were given).
+    let vault_root = roots
+        .iter()
+        .find(|root| root.is_dir())
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from("."));
+    let config = match crate::config::load(&vault_root) {
+        Ok(config) => config.lint_config(),
+        Err(message) => {
+            eprintln!("morog {cmd}: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
     let mut diagnostics = Vec::new();
     let mut analyses: Vec<(PathBuf, Analysis)> = Vec::with_capacity(files.len());
 

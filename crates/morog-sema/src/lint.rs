@@ -8,11 +8,9 @@
 //! store).
 //!
 //! Vault-level ([`lint_vault`]): `sta::id` uniqueness, `sta::relation-target`
-//! (unresolved `to:`, argument → source), and `sta::positional-address`.
-//!
-//! Deferred to later milestones: `pub::leak` (needs the publish exporter,
-//! §6) and resolution of `[@key]` against the real bibrat store (M3's
-//! `BibratStore`).
+//! (unresolved `to:`, argument → source), `sta::positional-address`, and
+//! `pub::leak` (a `publish: true` note targeting a private note, plan §6.1 —
+//! the exporter renders such targets as unlinked text).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -65,6 +63,7 @@ pub enum LintCode {
     RelationTarget,
     UnknownCitekey,
     PositionalAddress,
+    PubLeak,
 }
 
 impl LintCode {
@@ -78,6 +77,7 @@ impl LintCode {
             Self::RelationTarget => "sta::relation-target",
             Self::UnknownCitekey => "sta::unknown-citekey",
             Self::PositionalAddress => "sta::positional-address",
+            Self::PubLeak => "pub::leak",
         }
     }
 
@@ -88,7 +88,9 @@ impl LintCode {
             | Self::RelationTarget
             | Self::UnknownCitekey
             | Self::PositionalAddress => Severity::Error,
-            Self::UncitedBlock | Self::TopicTooLong | Self::ArgumentArity => Severity::Warning,
+            Self::UncitedBlock | Self::TopicTooLong | Self::ArgumentArity | Self::PubLeak => {
+                Severity::Warning
+            }
         }
     }
 }
@@ -243,7 +245,7 @@ pub struct VaultNote<'a> {
 }
 
 /// Run the cross-file lints: `sta::id` uniqueness, `sta::relation-target`,
-/// and `sta::positional-address`.
+/// `sta::positional-address`, and `pub::leak`.
 pub fn lint_vault(notes: &[VaultNote<'_>]) -> Vec<Diagnostic> {
     let mut out = Vec::new();
 
@@ -274,8 +276,8 @@ pub fn lint_vault(notes: &[VaultNote<'_>]) -> Vec<Diagnostic> {
         }
     }
 
-    // Resolution map: id → (kind, declared anchors).
-    let resolve: HashMap<&str, (Option<NoteKind>, Vec<&str>)> = by_id
+    // Resolution map: id → (kind, publish, declared anchors).
+    let resolve: HashMap<&str, (Option<NoteKind>, bool, Vec<&str>)> = by_id
         .iter()
         .map(|(id, holders)| {
             let first = holders[0];
@@ -285,7 +287,10 @@ pub fn lint_vault(notes: &[VaultNote<'_>]) -> Vec<Diagnostic> {
                 .iter()
                 .filter_map(|b| b.anchor.as_deref())
                 .collect();
-            (*id, (first.facts.note.kind, anchors))
+            (
+                *id,
+                (first.facts.note.kind, first.facts.note.publish, anchors),
+            )
         })
         .collect();
 
@@ -320,7 +325,7 @@ pub fn lint_vault(notes: &[VaultNote<'_>]) -> Vec<Diagnostic> {
                         ));
                     }
                 }
-                Some((kind, anchors)) => {
+                Some((kind, _publish, anchors)) => {
                     if *kind == Some(NoteKind::Source) {
                         out.push(Diagnostic::new(
                             LintCode::RelationTarget,
@@ -357,6 +362,45 @@ pub fn lint_vault(notes: &[VaultNote<'_>]) -> Vec<Diagnostic> {
                             ));
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // pub::leak — a `publish: true` note targeting a note that is not
+    // published (plan §6.1). The exporter renders those targets as unlinked
+    // text. A citation whose key has no vault note is a bibliography
+    // virtual source (plan §4.2), which counts as publishable.
+    for note in notes {
+        if !note.facts.note.publish {
+            continue;
+        }
+        let mut leak = |verb: &str, target: &str, span: Option<Span>| {
+            out.push(Diagnostic::new(
+                LintCode::PubLeak,
+                format!(
+                    "published note {verb} private note `{target}`; the exporter renders it as unlinked text"
+                ),
+                note.path,
+                span,
+            ));
+        };
+        let private =
+            |target: &str| matches!(resolve.get(target), Some((_, published, _)) if !published);
+        for rel in &note.facts.relations {
+            if private(&rel.target_id) {
+                leak("relates to", &rel.target_id, Some(rel.span));
+            }
+        }
+        for id_ref in &note.facts.id_refs {
+            if private(&id_ref.target_id) {
+                leak("links to", &id_ref.target_id, Some(id_ref.span));
+            }
+        }
+        for block in &note.facts.blocks {
+            for cite in &block.cites {
+                if private(&cite.key.0) {
+                    leak("cites", &cite.key.0, Some(cite.span));
                 }
             }
         }

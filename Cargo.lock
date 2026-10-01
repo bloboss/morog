@@ -786,6 +786,8 @@ dependencies = [
  "morog-sema",
  "notify",
  "petgraph",
+ "serde",
+ "toml",
  "uuid",
 ]
 

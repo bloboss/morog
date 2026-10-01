@@ -6,6 +6,7 @@
 
 mod bib;
 mod cli;
+mod config;
 mod graph;
 mod index;
 mod json;

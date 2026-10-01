@@ -10,6 +10,9 @@ fn fixture_vault() -> &'static str {
 fn run_lint(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_morog"))
         .args(args)
+        // Point XDG_CONFIG_HOME at an empty directory so a developer's real
+        // ~/.config/morog/config.toml cannot change lint thresholds here.
+        .env("XDG_CONFIG_HOME", std::env::temp_dir())
         .output()
         .expect("run morog lint")
 }
@@ -80,6 +83,39 @@ fn lint_single_clean_file_exits_zero() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert_eq!(out.status.code(), Some(0), "stdout:\n{stdout}");
     assert!(stdout.contains("1 file(s) checked: 0 error(s), 0 warning(s)"));
+}
+
+#[test]
+fn lint_pub_leak_over_the_publish_vault() {
+    let vault = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/pubvault");
+    let out = run_lint(&["lint", "--no-bib", vault]);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+
+    // pub::leak is a warning, and the vault is otherwise clean.
+    assert_eq!(out.status.code(), Some(0), "stdout:\n{stdout}");
+
+    let expect = |needle: &str| {
+        assert!(stdout.contains(needle), "missing `{needle}` in:\n{stdout}");
+    };
+    // The published topic leaks through `related:`, a cite, and a link.
+    expect(
+        "leaf-economics.md:7:11: pub::leak: published note relates to private note `shade-plasticity`",
+    );
+    expect(
+        "leaf-economics.md:17:65: pub::leak: published note cites private note `reich_global_1997`",
+    );
+    expect(
+        "leaf-economics.md:21:11: pub::leak: published note links to private note `shade-plasticity`",
+    );
+    // The published argument leaks through a typed relation.
+    expect(
+        "allocation-argument.md:12:11: pub::leak: published note relates to private note `shade-plasticity`",
+    );
+    // A bib-only citekey is a virtual source and publishable: no leak.
+    assert!(!stdout.contains("poorter_biomass_2012"), "{stdout}");
+    // Published-to-published targets are fine.
+    assert!(!stdout.contains("`wright_leaf_2004`"), "{stdout}");
+    expect("5 file(s) checked: 0 error(s), 4 warning(s)");
 }
 
 fn fixture_bibrat() -> &'static str {

@@ -13,4 +13,6 @@ morog-lsp.workspace = true
 morog-sema.workspace = true
 notify.workspace = true
 petgraph.workspace = true
+serde.workspace = true
+toml.workspace = true
 uuid = { workspace = true, features = ["v7"] }

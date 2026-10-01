@@ -329,3 +329,69 @@ fn vault_lint_positional_address() {
     let vault = Vault::new(&[("arg.md", arg), ("squares.md", topic_with_b1)]);
     assert!(vault.lint().is_empty());
 }
+
+#[test]
+fn vault_lint_pub_leak() {
+    // A published topic and argument each target the private topic/source in
+    // every way a note can: `related:`, inline `id:` links, inline cites,
+    // and typed relations. Bib-only citekeys (no vault note) stay leak-free.
+    let pub_topic = "---\nid: pub-topic\nkind: topic\npublish: true\nrelated: [private-topic]\n---\n\nCited [@private_source]. #anchor e1\n\nBib-only key [@bib_only_key]. #anchor e2\n\nSee [private](id:private-topic) and [public](id:pub-arg). #mine\n";
+    let pub_arg = "---\nid: pub-arg\nkind: argument\npublish: true\nform: claim\nthesis: \"t\"\nrelations:\n  - { to: pub-topic#e1, stance: supports }\n  - { to: private-topic, stance: qualifies }\n---\n";
+    // Private notes may target other private notes freely.
+    let private_topic =
+        "---\nid: private-topic\nkind: topic\n---\n\nAlso cites [@private_source]. #mine\n";
+    let private_source = "---\nid: private_source\nkind: source\n---\n";
+    let vault = Vault::new(&[
+        ("pub-topic.md", pub_topic),
+        ("pub-arg.md", pub_arg),
+        ("private-topic.md", private_topic),
+        ("private-source.md", private_source),
+    ]);
+
+    let diags = vault.lint();
+    let leaks: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == LintCode::PubLeak)
+        .collect();
+    assert_eq!(leaks.len(), 4, "{leaks:?}");
+    assert!(leaks.iter().all(|d| d.severity == Severity::Warning));
+    assert!(leaks.iter().all(|d| d.span.is_some()));
+
+    let messages: Vec<&str> = leaks.iter().map(|d| d.message.as_str()).collect();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("relates to private note `private-topic`")),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("links to private note `private-topic`")),
+        "{messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("cites private note `private_source`")),
+        "{messages:?}"
+    );
+    // The argument's typed relation to the private topic leaks; its relation
+    // to the published topic does not.
+    assert_eq!(
+        leaks
+            .iter()
+            .filter(|d| d.file.ends_with("pub-arg.md"))
+            .count(),
+        1
+    );
+    // Links between published notes and bib-only citekeys are leak-free, and
+    // private notes never produce leaks.
+    assert!(!messages.iter().any(|m| m.contains("bib_only_key")));
+    assert!(!messages.iter().any(|m| m.contains("`pub-")));
+    assert!(
+        !leaks
+            .iter()
+            .any(|d| d.file.ends_with("private-topic.md") || d.file.ends_with("private-source.md"))
+    );
+}
