@@ -8,6 +8,7 @@ version = "0.1.0"
 license = "MIT"
 
 [workspace.dependencies]
+biblatex = "0.12"
 blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 ignore = "0.4"
@@ -15,6 +16,7 @@ morg-parser = { path = "../morg/crates/morg-parser" }
 notify = "8"
 rayon = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
+toml = "1"
 uuid = "1"
 
 morog-bib = { path = "crates/morog-bib" }

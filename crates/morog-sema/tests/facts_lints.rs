@@ -1,13 +1,12 @@
 //! Unit tests for `FileFacts` extraction and the file- and vault-level
 //! lints (plan §2.4–2.5), driven by fixture strings through the public API.
 
-use std::collections::HashMap;
 use std::path::Path;
 
-use morog_bib::{BibEntry, BibStore, FixtureStore};
+use morog_bib::{BibStore, FixtureStore};
 use morog_sema::{
-    Analysis, ArgumentForm, BlockUnit, BloomOp, CiteKey, LintCode, LintConfig, NoteKind, Severity,
-    Stance, VaultNote, analyze_document, lint_file, lint_vault,
+    Analysis, ArgumentForm, BlockUnit, BloomOp, LintCode, LintConfig, NoteKind, Severity, Stance,
+    VaultNote, analyze_document, lint_file, lint_vault,
 };
 
 fn analyze(source: &str) -> Analysis {
@@ -30,14 +29,7 @@ fn codes(diags: &[morog_sema::Diagnostic]) -> Vec<LintCode> {
 }
 
 fn fixture_store(keys: &[&str]) -> FixtureStore {
-    FixtureStore::new(
-        keys.iter()
-            .map(|k| {
-                let key = CiteKey::new(*k);
-                (key.clone(), BibEntry { key, title: None })
-            })
-            .collect::<HashMap<_, _>>(),
-    )
+    FixtureStore::from_keys(keys.iter().copied())
 }
 
 // ---------------------------------------------------------------------------
