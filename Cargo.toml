@@ -14,6 +14,7 @@ clap = { version = "4", features = ["derive"] }
 ignore = "0.4"
 morg-parser = { path = "../morg/crates/morg-parser" }
 notify = "8"
+petgraph = { version = "0.8", default-features = false, features = ["stable_graph"] }
 rayon = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 toml = "1"

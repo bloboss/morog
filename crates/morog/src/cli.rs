@@ -44,12 +44,8 @@ pub enum Command {
         #[command(subcommand)]
         command: ResearchCommand,
     },
-    /// Emit the discourse graph as DOT
-    Graph {
-        /// Output file (default: stdout)
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-    },
+    /// Emit the discourse graph as DOT (plan §7.1)
+    Graph(GraphArgs),
     /// Lint STA notes (frontmatter, provenance, relations)
     Lint {
         /// Markdown files or directories to lint
@@ -108,6 +104,53 @@ pub enum ResearchCommand {
         #[command(flatten)]
         bib: BibArgs,
     },
+}
+
+/// Flags of `morog graph` (plan §7.1): neighborhood restriction, node and
+/// edge filters, the evidence (discourse-graph) expansion, and output. The
+/// global `--format` selects DOT (`text`, the default) or a plain
+/// node/edge-list JSON.
+#[derive(Debug, Args)]
+pub struct GraphArgs {
+    /// Restrict the graph to the neighborhood of this note id
+    #[arg(long, value_name = "ID")]
+    pub root: Option<String>,
+
+    /// Neighborhood radius in hops, following edges in both directions
+    /// (default 1; requires --root)
+    #[arg(long, value_name = "N", requires = "root")]
+    pub depth: Option<usize>,
+
+    /// Keep only these note kinds (comma-separated: source,topic,argument)
+    #[arg(long, value_name = "KIND,...", value_delimiter = ',')]
+    pub kinds: Vec<String>,
+
+    /// Keep only edges with these stances (comma-separated:
+    /// supports,opposes,qualifies); unstanced edges are dropped
+    #[arg(long, value_name = "STANCE,...", value_delimiter = ',')]
+    pub stance: Vec<String>,
+
+    /// Keep only edges whose Bloom op is at least this deep
+    /// (recall..create); edges without an op are dropped
+    #[arg(long, value_name = "OP")]
+    pub min_op: Option<String>,
+
+    /// Expand each topic into a cluster of its evidence blocks
+    /// (the discourse-graph view)
+    #[arg(long)]
+    pub evidence: bool,
+
+    /// Keep only notes with `publish: true`
+    #[arg(long)]
+    pub published: bool,
+
+    /// Output file (default: stdout)
+    #[arg(short, long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
+
+    /// Vault root directory the index belongs to (default: current directory)
+    #[arg(long, value_name = "DIR")]
+    pub vault: Option<PathBuf>,
 }
 
 /// How a subcommand finds the bibrat store (plan §4). The default is

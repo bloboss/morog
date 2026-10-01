@@ -11,4 +11,5 @@ morog-bib.workspace = true
 morog-index.workspace = true
 morog-sema.workspace = true
 notify.workspace = true
+petgraph.workspace = true
 uuid = { workspace = true, features = ["v7"] }
