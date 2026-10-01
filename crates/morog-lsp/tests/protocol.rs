@@ -146,6 +146,48 @@ fn cross_file_diagnostics_follow_edits_across_files() {
 }
 
 #[test]
+fn pub_leak_follows_the_target_publish_flag() {
+    let client = Client::start(&["utf-8"], json!({ "vaultRoot": "/vault" }));
+    let pub_uri = "file:///vault/pub-note.md";
+    let priv_uri = "file:///vault/priv-note.md";
+
+    // A published topic relating to an id with no vault note: no leak (it
+    // could be a bibliography virtual source).
+    client.open(
+        pub_uri,
+        1,
+        "---\nid: pub-note\nkind: topic\npublish: true\nrelated: [priv-note]\n---\n",
+    );
+    let diags = client.recv_diagnostics(pub_uri);
+    assert_eq!(codes(&diags), Vec::<String>::new());
+
+    // The target turns out to be a private vault note: pub::leak fires on
+    // the publishing note.
+    client.open(priv_uri, 1, "---\nid: priv-note\nkind: topic\n---\n");
+    let diags = client.recv_diagnostics(pub_uri);
+    assert_eq!(codes(&diags), ["pub::leak"]);
+
+    // Flipping the target to publish: true clears the leak.
+    client.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": { "uri": priv_uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 3, "character": 0 },
+                    "end": { "line": 3, "character": 0 },
+                },
+                "text": "publish: true\n",
+            }],
+        }),
+    );
+    let diags = client.recv_diagnostics(pub_uri);
+    assert_eq!(codes(&diags), Vec::<String>::new());
+
+    client.shutdown();
+}
+
+#[test]
 fn utf16_positions_in_diagnostics() {
     let client = Client::start(&[], json!({ "vaultRoot": "/vault" }));
     let uri = "file:///vault/topic.md";

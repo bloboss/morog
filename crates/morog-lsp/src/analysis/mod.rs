@@ -162,9 +162,10 @@ impl Analysis {
     }
 
     /// The vault-level lints for one file, recomputed from the xref maps
-    /// (plan M7 L1): `sta::id` uniqueness, `sta::relation-target`, and
-    /// `sta::positional-address`. Mirrors `morog_sema::lint_vault`, scoped
-    /// to a single file so a keystroke never relints the whole vault.
+    /// (plan M7 L1): `sta::id` uniqueness, `sta::relation-target`,
+    /// `sta::positional-address`, and `pub::leak`. Mirrors
+    /// `morog_sema::lint_vault`, scoped to a single file so a keystroke
+    /// never relints the whole vault.
     pub fn cross_diags(&self, file: FileId) -> Vec<Diagnostic> {
         let mut out = Vec::new();
         let Some(fa) = self.files.get(&file) else {
@@ -275,6 +276,46 @@ impl Analysis {
             }
         }
 
+        // pub::leak — a `publish: true` note targeting a note that is not
+        // published (plan §6.1; mirrors `morog_sema::lint_vault`). Targets
+        // with no vault note stay silent: an unresolved citekey is a
+        // bibliography virtual source (plan §4.2), which is publishable.
+        if facts.note.publish {
+            let private = |target: &str| {
+                self.xref
+                    .resolve(target)
+                    .and_then(|f| self.files.get(&f))
+                    .is_some_and(|t| !t.facts.note.publish)
+            };
+            let mut leak = |verb: &str, target: &str, span| {
+                out.push(Diagnostic::new(
+                    LintCode::PubLeak,
+                    format!(
+                        "published note {verb} private note `{target}`; the exporter renders it as unlinked text"
+                    ),
+                    path,
+                    Some(span),
+                ));
+            };
+            for rel in &facts.relations {
+                if private(&rel.target_id) {
+                    leak("relates to", &rel.target_id, rel.span);
+                }
+            }
+            for id_ref in &facts.id_refs {
+                if private(&id_ref.target_id) {
+                    leak("links to", &id_ref.target_id, id_ref.span);
+                }
+            }
+            for block in &facts.blocks {
+                for cite in &block.cites {
+                    if private(&cite.key.0) {
+                        leak("cites", &cite.key.0, cite.span);
+                    }
+                }
+            }
+        }
+
         out
     }
 }
@@ -379,6 +420,52 @@ mod tests {
         let diags = analysis.cross_diags(FileId(1));
         assert_eq!(diags.len(), 2);
         assert!(diags.iter().all(|d| d.code == LintCode::RelationTarget));
+    }
+
+    #[test]
+    fn cross_diags_flag_publish_leaks() {
+        let mut analysis = Analysis::default();
+        // A published topic relating to, linking to, and citing targets.
+        set(
+            &mut analysis,
+            FileId(0),
+            "/v/pub.md",
+            "---\nid: pub-note\nkind: topic\npublish: true\nrelated: [priv-note]\n---\n\nSee [p](id:priv-note) and [@bibkey]. #mine\n",
+        );
+        set(
+            &mut analysis,
+            FileId(1),
+            "/v/priv.md",
+            "---\nid: priv-note\nkind: topic\n---\n",
+        );
+
+        // The private target leaks through the relation and the inline
+        // link; `@bibkey` has no vault note, so it stays a publishable
+        // bibliography virtual source.
+        let diags = analysis.cross_diags(FileId(0));
+        let codes: Vec<&str> = diags.iter().map(|d| d.code.as_str()).collect();
+        assert_eq!(codes, ["pub::leak", "pub::leak"]);
+        assert!(
+            diags[0].message.contains("relates to"),
+            "{}",
+            diags[0].message
+        );
+        assert!(
+            diags[1].message.contains("links to"),
+            "{}",
+            diags[1].message
+        );
+
+        // Publishing the target clears both; the publisher is among the
+        // affected files of that edit.
+        let touched = set(
+            &mut analysis,
+            FileId(1),
+            "/v/priv.md",
+            "---\nid: priv-note\nkind: topic\npublish: true\n---\n",
+        );
+        assert!(analysis.affected_files(&touched).contains(&FileId(0)));
+        assert!(analysis.cross_diags(FileId(0)).is_empty());
     }
 
     #[test]
