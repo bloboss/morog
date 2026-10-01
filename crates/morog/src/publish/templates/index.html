@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ site.title }}</h1>
+{% for group in groups %}{% if group.notes %}
+<section class="group">
+<h2>{{ group.heading }}</h2>
+<ul class="note-list">
+{% for n in group.notes %}<li><a href="{{ n.iri | safe }}">{{ n.title }}</a> <code>{{ n.id }}</code></li>
+{% endfor %}</ul>
+</section>
+{% endif %}{% endfor %}
+{% endblock %}

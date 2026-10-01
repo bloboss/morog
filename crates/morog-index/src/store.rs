@@ -61,8 +61,8 @@ pub fn store_file_facts(
             conn.prepare_cached(
                 "INSERT OR IGNORE INTO notes
                    (note_id, uuid, kind, title, form, thesis, status, publish, file_id,
-                    id_start, id_end, id_line, id_col)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    id_start, id_end, id_line, id_col, created, extra)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             )?
             .execute(params![
                 note_id,
@@ -78,6 +78,8 @@ pub fn store_file_facts(
                 id_span.map(|s| s.end as i64),
                 id_span.map(|s| s.line),
                 id_span.map(|s| s.col),
+                note.created,
+                note.extra_json,
             ])?;
             let mut insert_alias = conn.prepare_cached(
                 "INSERT INTO aliases (note_id, alias, file_id, ord) VALUES (?1, ?2, ?3, ?4)",
@@ -401,11 +403,13 @@ fn load_note_facts(conn: &Connection, file_id: i64) -> Result<NoteFacts, Error> 
         Option<String>,
         bool,
         Option<Span>,
+        Option<String>,
+        Option<String>,
     );
     let note_row: Option<NoteRow> = conn
         .prepare_cached(
             "SELECT note_id, uuid, kind, title, form, thesis, status, publish,
-                    id_start, id_end, id_line, id_col
+                    id_start, id_end, id_line, id_col, created, extra
              FROM notes WHERE file_id = ?1",
         )?
         .query_row([file_id], |r| {
@@ -419,11 +423,14 @@ fn load_note_facts(conn: &Connection, file_id: i64) -> Result<NoteFacts, Error> 
                 r.get(6)?,
                 r.get(7)?,
                 opt_span(r, 8)?,
+                r.get(12)?,
+                r.get(13)?,
             ))
         })
         .optional()?;
 
-    let Some((note_id, uuid, kind, title, form, thesis, status, publish, id_span)) = note_row
+    let Some((note_id, uuid, kind, title, form, thesis, status, publish, id_span, created, extra)) =
+        note_row
     else {
         // Plain morg note (or a kinded note whose id collided — see
         // `store_file_facts`; that case does not round-trip and is linted).
@@ -455,6 +462,8 @@ fn load_note_facts(conn: &Connection, file_id: i64) -> Result<NoteFacts, Error> 
         thesis,
         status,
         publish,
+        created,
+        extra_json: extra,
         aliases,
     })
 }

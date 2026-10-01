@@ -41,6 +41,13 @@ pub struct NoteFacts {
     /// Normalized status string (`read`, `draft`, …), kind-specific.
     pub status: Option<String>,
     pub publish: bool,
+    /// The `created:` frontmatter value, verbatim.
+    pub created: Option<String>,
+    /// The user-owned `extra:` map as a canonical JSON object in document
+    /// order; `None` when absent or empty. Kept in the index so the publish
+    /// exporter (plan §6.2–6.3) can expose frontmatter to templates without
+    /// reparsing markdown.
+    pub extra_json: Option<String>,
     pub aliases: Vec<String>,
 }
 
@@ -190,6 +197,8 @@ fn note_facts(doc: &Document, meta: &NoteMeta) -> NoteFacts {
             facts.title = m.title.clone();
             facts.status = m.status.map(|s| s.as_str().to_owned());
             facts.publish = m.publish;
+            facts.created = m.created.clone();
+            facts.extra_json = crate::meta::extra_to_json(&m.extra);
         }
         NoteMeta::Topic(m) => {
             facts.id = m.id.clone();
@@ -197,6 +206,8 @@ fn note_facts(doc: &Document, meta: &NoteMeta) -> NoteFacts {
             facts.title = m.title.clone();
             facts.aliases = m.aliases.clone();
             facts.publish = m.publish;
+            facts.created = m.created.clone();
+            facts.extra_json = crate::meta::extra_to_json(&m.extra);
         }
         NoteMeta::Argument(m) => {
             facts.id = m.id.clone();
@@ -206,6 +217,8 @@ fn note_facts(doc: &Document, meta: &NoteMeta) -> NoteFacts {
             facts.thesis = m.thesis.clone();
             facts.status = m.status.map(|s| s.as_str().to_owned());
             facts.publish = m.publish;
+            facts.created = m.created.clone();
+            facts.extra_json = crate::meta::extra_to_json(&m.extra);
         }
     }
     facts

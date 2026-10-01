@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 clap.workspace = true
+minijinja.workspace = true
 morg-parser.workspace = true
 morog-bib.workspace = true
 morog-index.workspace = true
@@ -14,5 +15,6 @@ morog-sema.workspace = true
 notify.workspace = true
 petgraph.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 uuid = { workspace = true, features = ["v7"] }

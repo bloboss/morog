@@ -86,6 +86,8 @@ struct Coverage {
     publish: bool,
     thesis: bool,
     question_form: bool,
+    created: bool,
+    extra: bool,
 }
 
 impl Coverage {
@@ -119,6 +121,8 @@ impl Coverage {
         assert!(self.publish, "no published note");
         assert!(self.thesis, "no argument with thesis");
         assert!(self.question_form, "no question-form argument");
+        assert!(self.created, "no note with created:");
+        assert!(self.extra, "no note with an extra: map");
     }
 }
 
@@ -362,6 +366,20 @@ fn gen_note(rng: &mut Rng, i: usize, cov: &mut Coverage) -> String {
             cov.publish = true;
             fm.push_str("publish: true\n");
         }
+        if rng.chance(40) {
+            cov.created = true;
+            fm.push_str(&format!("created: 2026-{:02}-01\n", 1 + rng.below(12)));
+        }
+        if rng.chance(30) {
+            cov.extra = true;
+            fm.push_str(&format!(
+                "extra:\n  layout: {}\n  depth: {}\n  draft: true\n  tags: [{}]\n  nested:\n    key: {}\n",
+                quoted(rng.pick(&MULTIBYTE_WORDS)),
+                rng.below(9),
+                quoted(rng.pick(&ASCII_WORDS)),
+                quoted(rng.pick(&ASCII_WORDS)),
+            ));
+        }
     }
     format!("---\n{fm}---\n\n{}", gen_body(rng, cov))
 }
@@ -451,9 +469,16 @@ fn facts_round_trip_edge_cases() {
 #[test]
 fn facts_round_trip_fixture_vault() {
     let vault = concat!(env!("CARGO_MANIFEST_DIR"), "/../morog/tests/fixtures/vault");
+    let pubvault = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../morog/tests/fixtures/pubvault"
+    );
 
     let mut checked = 0;
-    let mut stack = vec![std::path::PathBuf::from(vault)];
+    let mut stack = vec![
+        std::path::PathBuf::from(vault),
+        std::path::PathBuf::from(pubvault),
+    ];
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).unwrap() {
             let path = entry.unwrap().path();
@@ -473,5 +498,5 @@ fn facts_round_trip_fixture_vault() {
             }
         }
     }
-    assert_eq!(checked, 9, "expected the 9 committed fixture notes");
+    assert_eq!(checked, 14, "expected the 14 committed fixture notes");
 }

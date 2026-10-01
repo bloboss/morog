@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}{{ note.title }} · {{ site.title }}{% endblock %}
+{% block head %}<link rel="canonical" href="{{ note.iri | safe }}">
+<script type="application/ld+json">
+{{ jsonld | safe }}
+</script>{% endblock %}
+{% block content %}
+<article class="note kind-{{ note.kind }}">
+<p class="meta"><span class="kind">{{ note.kind }}</span>{% if note.status %} · {{ note.status }}{% endif %}{% if note.created %} · {{ note.created }}{% endif %}</p>
+<h1>{{ note.title }}</h1>
+<p class="id"><code>{{ note.id }}</code>{% if note.aliases %} · also known as {{ note.aliases | join(", ") }}{% endif %}</p>
+{% if note.thesis %}<blockquote class="thesis">{{ note.thesis }}</blockquote>{% endif %}
+{% if relations %}
+<section class="relations">
+<h2>Relations</h2>
+<ul>
+{% for rel in relations %}<li><span class="stance">{{ rel.rel }}</span>{% if rel.op %} <span class="op">({{ rel.op }})</span>{% endif %} → {% if rel.href %}<a href="{{ rel.href | safe }}">{{ rel.label }}</a>{% else %}{{ rel.label }}{% endif %}</li>
+{% endfor %}</ul>
+</section>
+{% endif %}
+{% for block in blocks %}{{ block.html | safe }}
+{% endfor %}
+{% include "backlinks.html" %}
+</article>
+{% endblock %}

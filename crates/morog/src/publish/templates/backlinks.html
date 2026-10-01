@@ -1,0 +1,8 @@
+{% if backlinks %}
+<section class="backlinks">
+<h2>Backlinks</h2>
+<ul>
+{% for b in backlinks %}<li><a href="{{ b.href | safe }}">{{ b.label }}</a> <span class="rel">({{ b.rel }}{% if b.op %}, {{ b.op }}{% endif %})</span></li>
+{% endfor %}</ul>
+</section>
+{% endif %}

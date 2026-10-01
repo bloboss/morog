@@ -1,0 +1,38 @@
+:root {
+  --fg: #1c1c1c;
+  --muted: #6a6a6a;
+  --accent: #1a5fb4;
+  --rule: #dcdcdc;
+  --bg: #ffffff;
+}
+body {
+  margin: 0 auto;
+  max-width: 44rem;
+  padding: 0 1rem 3rem;
+  font: 1rem/1.6 Georgia, "Times New Roman", serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+header nav {
+  padding: 1rem 0;
+  border-bottom: 1px solid var(--rule);
+  font-family: Helvetica, Arial, sans-serif;
+}
+header a { color: var(--fg); text-decoration: none; font-weight: bold; }
+a { color: var(--accent); }
+h1, h2, h3 { font-family: Helvetica, Arial, sans-serif; line-height: 1.25; }
+.meta, .id, .rel { color: var(--muted); font-family: Helvetica, Arial, sans-serif; font-size: 0.85rem; }
+.kind { text-transform: uppercase; letter-spacing: 0.08em; }
+blockquote.thesis {
+  margin: 1rem 0;
+  padding: 0.5rem 1rem;
+  border-left: 3px solid var(--accent);
+  font-style: italic;
+}
+.block.mine { border-left: 3px solid var(--rule); padding-left: 0.75rem; }
+.cite { font-family: Helvetica, Arial, sans-serif; font-size: 0.85rem; color: var(--muted); }
+.cite a { color: var(--accent); }
+section.relations ul, section.backlinks ul { padding-left: 1.2rem; }
+footer { margin-top: 3rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.8rem; }
+code { font-size: 0.9em; }
+pre { overflow-x: auto; padding: 0.75rem; background: #f6f6f6; }

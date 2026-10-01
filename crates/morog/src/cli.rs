@@ -59,6 +59,30 @@ pub enum Command {
     /// initializationOptions (`vaultRoot`, `bibratRoot`), falling back to
     /// the first workspace folder and bibrat auto-discovery.
     Lsp,
+    /// Export the published subgraph (plan §6): site, RDF, micropub
+    ///
+    /// Only notes with `publish: true` are exported, under IRIs minted from
+    /// their uuid beneath the configured `[publish] base_iri`. Requires an
+    /// existing index (run `morog index` first).
+    Publish {
+        #[command(subcommand)]
+        command: PublishCommand,
+    },
+}
+
+/// The `morog publish` export targets (plan §6.2), in the order they land.
+#[derive(Subcommand)]
+pub enum PublishCommand {
+    /// Generate the static site: one page per published note, backlinks,
+    /// and embedded JSON-LD
+    Site {
+        /// Output directory (default: ./_site)
+        #[arg(short, long, value_name = "DIR")]
+        output: Option<PathBuf>,
+        /// Vault root directory the index belongs to (default: current directory)
+        #[arg(long, value_name = "DIR")]
+        vault: Option<PathBuf>,
+    },
 }
 
 /// The `morog research` subcommands (plan §7 M5): note creation from the

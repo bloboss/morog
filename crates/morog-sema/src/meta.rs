@@ -284,6 +284,98 @@ pub fn frontmatter_keys(kind: Option<NoteKind>) -> Vec<&'static str> {
     keys
 }
 
+/// Serialize a user-owned `extra:` map as a canonical JSON object in
+/// document order; `None` when the map is empty.
+///
+/// The index stores this string on the `notes` row so the publish exporter
+/// (plan §6.2–6.3) can expose `extra:` to templates without reparsing any
+/// frontmatter. The encoding is total: YAML scalars map to their JSON
+/// counterparts, non-finite floats and exotic nodes degrade to `null`, and
+/// non-string mapping keys are skipped (as in [`parse_note_meta`]).
+pub fn extra_to_json(extra: &Extra) -> Option<String> {
+    if extra.is_empty() {
+        return None;
+    }
+    let mut out = String::from("{");
+    for (i, (key, value)) in extra.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        json_string_into(key, &mut out);
+        out.push(':');
+        yaml_to_json(value, &mut out);
+    }
+    out.push('}');
+    Some(out)
+}
+
+fn yaml_to_json(value: &YamlOwned, out: &mut String) {
+    use std::fmt::Write as _;
+
+    use morg_parser::saphyr::ScalarOwned;
+    match value {
+        YamlOwned::Value(ScalarOwned::Null) => out.push_str("null"),
+        YamlOwned::Value(ScalarOwned::Boolean(b)) => {
+            let _ = write!(out, "{b}");
+        }
+        YamlOwned::Value(ScalarOwned::Integer(n)) => {
+            let _ = write!(out, "{n}");
+        }
+        YamlOwned::Value(ScalarOwned::FloatingPoint(f)) if f.is_finite() => {
+            let _ = write!(out, "{f}");
+        }
+        YamlOwned::Value(ScalarOwned::String(s)) => json_string_into(s, out),
+        YamlOwned::Sequence(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                yaml_to_json(item, out);
+            }
+            out.push(']');
+        }
+        YamlOwned::Mapping(map) => {
+            out.push('{');
+            let mut first = true;
+            for (k, v) in map {
+                let Some(k) = k.as_str() else { continue };
+                if !first {
+                    out.push(',');
+                }
+                first = false;
+                json_string_into(k, out);
+                out.push(':');
+                yaml_to_json(v, out);
+            }
+            out.push('}');
+        }
+        // Non-finite floats, aliases, tagged nodes, …
+        _ => out.push_str("null"),
+    }
+}
+
+/// Append `s` as a JSON string literal.
+fn json_string_into(s: &str, out: &mut String) {
+    use std::fmt::Write as _;
+
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
 /// Split a relation target into `(id, anchor)` at the first `#`.
 pub fn split_target(to: &str) -> (String, Option<String>) {
     match to.split_once('#') {

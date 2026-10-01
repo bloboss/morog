@@ -15,7 +15,8 @@ use rusqlite::{Connection, OpenFlags};
 use crate::Error;
 
 /// Bumped on any schema change; a mismatch triggers a full rebuild.
-pub const SCHEMA_VERSION: i64 = 1;
+/// v2 appended `notes.created` and `notes.extra` for the publish exporter.
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// Schema v1. Tables and views per plan §3.3; columns past the planned set
 /// exist so `FileFacts` round-trips losslessly (plan §5.4):
@@ -30,6 +31,9 @@ pub const SCHEMA_VERSION: i64 = 1;
 ///   are lossy); `relations.locator` — `[@key, p. 12]` locators on `cites`
 ///   rows; `relations.to_raw` — the raw frontmatter target text, which can
 ///   differ from `dst || '#' || dst_anchor` (e.g. a trailing `#`).
+/// - `notes.created`, `notes.extra` (v2) — the `created:` value and the
+///   user-owned `extra:` map as JSON, so `morog publish` exposes frontmatter
+///   to templates straight from the index (plan §6.2–6.3).
 const SCHEMA_SQL: &str = "
 CREATE TABLE meta      (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE files     (file_id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL,
@@ -40,7 +44,8 @@ CREATE TABLE notes     (note_id TEXT PRIMARY KEY, uuid TEXT UNIQUE,
                         title TEXT, form TEXT, thesis TEXT, status TEXT,
                         publish INTEGER NOT NULL DEFAULT 0,
                         file_id INTEGER NOT NULL REFERENCES files ON DELETE CASCADE,
-                        id_start INTEGER, id_end INTEGER, id_line INTEGER, id_col INTEGER);
+                        id_start INTEGER, id_end INTEGER, id_line INTEGER, id_col INTEGER,
+                        created TEXT, extra TEXT);
 CREATE TABLE plain     (file_id INTEGER PRIMARY KEY REFERENCES files ON DELETE CASCADE,
                         id_start INTEGER, id_end INTEGER, id_line INTEGER, id_col INTEGER);
 CREATE TABLE aliases   (note_id TEXT REFERENCES notes ON DELETE CASCADE, alias TEXT,
