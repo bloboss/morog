@@ -83,6 +83,16 @@ pub enum PublishCommand {
         #[arg(long, value_name = "DIR")]
         vault: Option<PathBuf>,
     },
+    /// Dump the published subgraph as Turtle (notes, stance/op relations,
+    /// CiTO citations, PROV-O derivations)
+    Rdf {
+        /// Output file (default: stdout)
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
+        /// Vault root directory the index belongs to (default: current directory)
+        #[arg(long, value_name = "DIR")]
+        vault: Option<PathBuf>,
+    },
 }
 
 /// The `morog research` subcommands (plan §7 M5): note creation from the

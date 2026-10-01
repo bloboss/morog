@@ -11,6 +11,7 @@
 //! Output is deterministic — every iteration is over sorted data — so a
 //! regenerated site or dump diffs cleanly.
 
+mod rdf;
 mod site;
 
 use std::collections::BTreeMap;
@@ -36,6 +37,7 @@ pub fn run(command: PublishCommand, format: &str) -> ExitCode {
             output.unwrap_or_else(|| PathBuf::from("_site")),
             format,
         ),
+        PublishCommand::Rdf { output, vault } => rdf::run(vault, output),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -122,6 +124,100 @@ pub(crate) struct BibMeta {
 /// The public IRI of a published note (plan §6.1).
 pub(crate) fn note_iri(base: &str, uuid: &str) -> String {
     format!("{base}/n/{uuid}")
+}
+
+/// Strip the inline tags the exporters consume from a literal text chunk:
+/// the block's own `#anchor <name>` tag and `#mine`.
+pub(crate) fn strip_tags(chunk: &str, anchor: Option<&str>) -> String {
+    let mut text = chunk.to_owned();
+    if let Some(anchor) = anchor {
+        text = text.replace(&format!("#anchor {anchor}"), "");
+    }
+    text.replace("#mine", "")
+}
+
+/// The published subgraph, as every exporter sees it: the `publish: true`
+/// notes (validated to carry the uuids their IRIs are minted from, §6.1),
+/// id lookup over the whole vault, and IRI resolution that refuses private
+/// targets.
+pub(crate) struct PublicGraph<'a> {
+    pub data: &'a PublishData,
+    /// Published notes, sorted by id.
+    pub published: Vec<&'a Note>,
+    /// id → note over the whole vault (private notes included).
+    by_id: BTreeMap<&'a str, &'a Note>,
+}
+
+impl<'a> PublicGraph<'a> {
+    pub fn new(data: &'a PublishData) -> Result<Self, String> {
+        let published: Vec<&Note> = data.notes.iter().filter(|n| n.publish).collect();
+        let missing: Vec<&str> = published
+            .iter()
+            .filter(|n| n.uuid.is_none())
+            .map(|n| n.id.as_str())
+            .collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "published note(s) without a uuid: {}; public IRIs are minted \
+                 from the uuid (plan §6.1), add a `uuid:` field",
+                missing.join(", ")
+            ));
+        }
+        Ok(Self {
+            data,
+            published,
+            by_id: data.notes.iter().map(|n| (n.id.as_str(), n)).collect(),
+        })
+    }
+
+    /// Look any vault note up by id.
+    pub fn note(&self, id: &str) -> Option<&'a Note> {
+        self.by_id.get(id).copied()
+    }
+
+    pub fn uuid_of(&self, note: &'a Note) -> Result<&'a str, String> {
+        note.uuid
+            .as_deref()
+            .ok_or_else(|| format!("note `{}` has no uuid", note.id))
+    }
+
+    /// The canonical IRI of a published note.
+    pub fn iri(&self, note: &'a Note) -> Result<String, String> {
+        Ok(note_iri(&self.data.base_iri, self.uuid_of(note)?))
+    }
+
+    /// The IRI of a target id (+ optional anchor) — `None` unless the
+    /// target is a published note (private targets stay out of the public
+    /// graph, §6.1).
+    pub fn iri_for(&self, target: &str, anchor: Option<&str>) -> Option<String> {
+        let note = self.note(target)?;
+        if !note.publish {
+            return None;
+        }
+        let iri = note_iri(&self.data.base_iri, note.uuid.as_deref()?);
+        Some(match anchor {
+            Some(a) => format!("{iri}#{a}"),
+            None => iri,
+        })
+    }
+
+    /// A note's declared (frontmatter) relations: `argues` and `related`.
+    pub fn declared_relations(&self, note: &Note) -> Vec<&'a Relation> {
+        self.data
+            .relations
+            .iter()
+            .filter(|r| r.src == note.id && matches!(r.kind.as_str(), "argues" | "related"))
+            .collect()
+    }
+
+    /// Inline citations of one block, in span order.
+    pub fn block_cites(&self, note: &Note, block: &Block) -> Vec<&'a Relation> {
+        self.data
+            .relations
+            .iter()
+            .filter(|r| r.src == note.id && r.src_block == Some(block.idx) && r.kind == "cites")
+            .collect()
+    }
 }
 
 // ----------------------------------------------------------------- loading

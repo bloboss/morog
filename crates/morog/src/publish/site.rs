@@ -25,7 +25,7 @@ use minijinja::Environment;
 use morog_sema::NoteKind;
 use serde_json::json;
 
-use super::{BibMeta, Block, Note, PublishData, Relation, note_iri};
+use super::{BibMeta, Block, Note, PublicGraph, Relation};
 
 /// The default theme snippets; any of these names can be overridden from
 /// `[publish] site_dir`.
@@ -43,13 +43,14 @@ const SITE_TITLE: &str = "Research notes";
 pub(super) fn run(vault: Option<PathBuf>, out_dir: PathBuf, format: &str) -> Result<(), String> {
     let (data, config) = super::load(vault)?;
     let env = environment(config.publish.site_dir.as_deref())?;
-    let site = Site::new(&data)?;
+    let graph = PublicGraph::new(&data)?;
+    let site = Site { graph: &graph };
 
     let mut pages: Vec<(PathBuf, String)> = Vec::new();
     pages.push((PathBuf::from("style.css"), site.render_style(&env)?));
     pages.push((PathBuf::from("index.html"), site.render_index(&env)?));
-    for note in &site.published {
-        let uuid = site.uuid_of(note)?;
+    for note in &graph.published {
+        let uuid = graph.uuid_of(note)?;
         pages.push((
             Path::new("n").join(uuid).join("index.html"),
             site.render_note(&env, note)?,
@@ -72,14 +73,14 @@ pub(super) fn run(vault: Option<PathBuf>, out_dir: PathBuf, format: &str) -> Res
     if format == "json" {
         println!(
             "{{\"published\": {}, \"files\": {}, \"dir\": \"{}\"}}",
-            site.published.len(),
+            graph.published.len(),
             pages.len(),
             crate::json::escape(&out_dir.display().to_string()),
         );
     } else {
         println!(
             "published {} note(s), {} file(s), to {}",
-            site.published.len(),
+            graph.published.len(),
             pages.len(),
             out_dir.display()
         );
@@ -111,58 +112,20 @@ fn environment(site_dir: Option<&Path>) -> Result<Environment<'static>, String> 
     Ok(env)
 }
 
-/// The site view over the loaded data: published notes plus lookup maps.
+/// The site renderer over the shared published-subgraph view.
 struct Site<'a> {
-    data: &'a PublishData,
-    published: Vec<&'a Note>,
-    /// id → note, every note in the vault (for private-target decisions).
-    by_id: BTreeMap<&'a str, &'a Note>,
+    graph: &'a PublicGraph<'a>,
 }
 
 impl<'a> Site<'a> {
-    fn new(data: &'a PublishData) -> Result<Self, String> {
-        let published: Vec<&Note> = data.notes.iter().filter(|n| n.publish).collect();
-        let missing: Vec<&str> = published
-            .iter()
-            .filter(|n| n.uuid.is_none())
-            .map(|n| n.id.as_str())
-            .collect();
-        if !missing.is_empty() {
-            return Err(format!(
-                "published note(s) without a uuid: {}; public IRIs are minted \
-                 from the uuid (plan §6.1), add a `uuid:` field",
-                missing.join(", ")
-            ));
-        }
-        Ok(Self {
-            data,
-            published,
-            by_id: data.notes.iter().map(|n| (n.id.as_str(), n)).collect(),
-        })
-    }
-
-    fn uuid_of(&self, note: &'a Note) -> Result<&'a str, String> {
-        note.uuid
-            .as_deref()
-            .ok_or_else(|| format!("note `{}` has no uuid", note.id))
-    }
-
     /// The page href of a target id (+ optional anchor) — `None` unless the
     /// target is a published note (unlinked rendering, plan §6.1).
     fn href_for(&self, target: &str, anchor: Option<&str>) -> Option<String> {
-        let note = self.by_id.get(target)?;
-        if !note.publish {
-            return None;
-        }
-        let iri = note_iri(&self.data.base_iri, note.uuid.as_deref()?);
-        Some(match anchor {
-            Some(a) => format!("{iri}#{a}"),
-            None => iri,
-        })
+        self.graph.iri_for(target, anchor)
     }
 
     fn site_context(&self) -> serde_json::Value {
-        json!({ "base": self.data.base_iri, "title": SITE_TITLE })
+        json!({ "base": self.graph.data.base_iri, "title": SITE_TITLE })
     }
 
     fn render_style(&self, env: &Environment<'_>) -> Result<String, String> {
@@ -174,6 +137,7 @@ impl<'a> Site<'a> {
             json!({
                 "heading": heading,
                 "notes": self
+                    .graph
                     .published
                     .iter()
                     .filter(|n| n.kind == kind)
@@ -181,7 +145,7 @@ impl<'a> Site<'a> {
                         json!({
                             "id": n.id,
                             "title": n.display_title(),
-                            "iri": note_iri(&self.data.base_iri, n.uuid.as_deref().unwrap_or("")),
+                            "iri": self.graph.iri_for(&n.id, None),
                         })
                     })
                     .collect::<Vec<_>>(),
@@ -201,7 +165,7 @@ impl<'a> Site<'a> {
     }
 
     fn render_alias(&self, env: &Environment<'_>, note: &Note) -> Result<String, String> {
-        let iri = note_iri(&self.data.base_iri, self.uuid_of(note)?);
+        let iri = self.graph.iri(note)?;
         render(
             env,
             "alias.html",
@@ -210,7 +174,7 @@ impl<'a> Site<'a> {
     }
 
     fn render_note(&self, env: &Environment<'_>, note: &'a Note) -> Result<String, String> {
-        let iri = note_iri(&self.data.base_iri, self.uuid_of(note)?);
+        let iri = self.graph.iri(note)?;
         let extra: serde_json::Value = note
             .extra_json
             .as_deref()
@@ -230,12 +194,13 @@ impl<'a> Site<'a> {
             .collect();
 
         let relations: Vec<serde_json::Value> = self
+            .graph
             .declared_relations(note)
             .iter()
             .map(|rel| {
                 let label = self
-                    .by_id
-                    .get(rel.dst.as_str())
+                    .graph
+                    .note(&rel.dst)
                     .map(|n| n.display_title().to_owned())
                     .unwrap_or_else(|| rel.dst.clone());
                 json!({
@@ -251,7 +216,7 @@ impl<'a> Site<'a> {
             .backlinks(note)
             .iter()
             .map(|rel| {
-                let src = self.by_id[rel.src.as_str()];
+                let src = self.graph.note(&rel.src).expect("backlink src is a note");
                 json!({
                     "label": src.display_title(),
                     "href": self.href_for(&rel.src, None),
@@ -288,24 +253,16 @@ impl<'a> Site<'a> {
         )
     }
 
-    /// The note's declared (frontmatter) relations: `argues` and `related`.
-    fn declared_relations(&self, note: &Note) -> Vec<&'a Relation> {
-        self.data
-            .relations
-            .iter()
-            .filter(|r| r.src == note.id && matches!(r.kind.as_str(), "argues" | "related"))
-            .collect()
-    }
-
     /// Incoming relations from other published notes, in (src, span) order.
     fn backlinks(&self, note: &Note) -> Vec<&'a Relation> {
-        self.data
+        self.graph
+            .data
             .relations
             .iter()
             .filter(|r| {
                 r.dst == note.id
                     && r.src != note.id
-                    && self.by_id.get(r.src.as_str()).is_some_and(|n| n.publish)
+                    && self.graph.note(&r.src).is_some_and(|n| n.publish)
             })
             .collect()
     }
@@ -313,6 +270,7 @@ impl<'a> Site<'a> {
     /// Inline segments (cites and `id:` links) inside one block, by span.
     fn inline_segments(&self, note: &Note, block: &Block) -> Vec<&'a Relation> {
         let mut segs: Vec<&Relation> = self
+            .graph
             .data
             .relations
             .iter()
@@ -386,7 +344,8 @@ impl<'a> Site<'a> {
                 // Prefer the published source note's page; else the DOI; else
                 // plain text (bib-only keys without a DOI, private sources).
                 let href = self.href_for(&seg.dst, None).or_else(|| {
-                    self.data
+                    self.graph
+                        .data
                         .bib
                         .get(&seg.dst)
                         .and_then(|b| b.doi.as_deref())
@@ -468,6 +427,7 @@ impl<'a> Site<'a> {
         // Typed relations, published targets only (private ones never leak
         // into the public graph — §6.1).
         let argues: Vec<serde_json::Value> = self
+            .graph
             .declared_relations(note)
             .iter()
             .filter(|r| r.kind == "argues")
@@ -488,6 +448,7 @@ impl<'a> Site<'a> {
             obj.insert("morog:argues".into(), json!(argues));
         }
         let related: Vec<serde_json::Value> = self
+            .graph
             .declared_relations(note)
             .iter()
             .filter(|r| r.kind == "related")
@@ -500,12 +461,13 @@ impl<'a> Site<'a> {
         // CiTO citations for citekeys whose bibliography entry has a DOI.
         let mut cited: BTreeMap<&str, &BibMeta> = BTreeMap::new();
         for rel in self
+            .graph
             .data
             .relations
             .iter()
             .filter(|r| r.src == note.id && r.kind == "cites")
         {
-            if let Some(meta) = self.data.bib.get(&rel.dst)
+            if let Some(meta) = self.graph.data.bib.get(&rel.dst)
                 && meta.doi.is_some()
             {
                 cited.insert(&rel.dst, meta);

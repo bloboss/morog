@@ -345,3 +345,78 @@ fn collect(root: &Path, out: &mut Vec<String>) {
     }
     walk(root, root, out);
 }
+
+// ---------------------------------------------------------------- rdf dump
+
+/// Parse emitted Turtle with a real parser; panics on any syntax error.
+fn parse_turtle(text: &str) -> Vec<String> {
+    oxttl::TurtleParser::new()
+        .for_slice(text.as_bytes())
+        .map(|t| {
+            let t = t.expect("emitted Turtle parses");
+            format!("{} {} {}", t.subject, t.predicate, t.object)
+        })
+        .collect()
+}
+
+#[test]
+fn rdf_dump_parses_and_covers_the_published_subgraph() {
+    let home = TempHome::ready("rdf");
+    let turtle = home.ok(&["publish", "rdf"]);
+    let triples = parse_turtle(&turtle);
+    assert!(triples.len() >= 20, "suspiciously small dump:\n{turtle}");
+
+    let has = |needle: &str| {
+        assert!(
+            triples.iter().any(|t| t.contains(needle)),
+            "no triple containing `{needle}` in:\n{}",
+            triples.join("\n")
+        );
+    };
+    // Notes are typed resources under the base IRI.
+    has(&format!(
+        "<{BASE}/n/{ARG_UUID}> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> \
+         <https://morog.example/ns#Argument>"
+    ));
+    has(&format!(
+        "<{BASE}/n/{TOPIC_UUID}> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> \
+         <https://morog.example/ns#Topic>"
+    ));
+    // Typed relations carry morog:stance and morog:op.
+    has("<https://morog.example/ns#stance> <https://morog.example/ns#supports>");
+    has("<https://morog.example/ns#stance> <https://morog.example/ns#opposes>");
+    has("<https://morog.example/ns#op> <https://morog.example/ns#analyze>");
+    has(&format!(
+        "<https://morog.example/ns#target> <{BASE}/n/{TOPIC_UUID}#spectrum>"
+    ));
+    // PROV-O derivation from the evidence block to its published source.
+    has(&format!(
+        "<{BASE}/n/{TOPIC_UUID}#spectrum> <http://www.w3.org/ns/prov#wasDerivedFrom> \
+         <{BASE}/n/{WRIGHT_UUID}>"
+    ));
+    // CiTO citation where the bibliography has a DOI.
+    has(&format!(
+        "<{BASE}/n/{TOPIC_UUID}#spectrum> <http://purl.org/spar/cito/cites> \
+         <https://doi.org/10.1038/nature02403>"
+    ));
+
+    // The private topic never enters the dump: no qualifies relation, no
+    // IRI, no text.
+    assert!(!turtle.contains(PRIVATE_UUID), "{turtle}");
+    assert!(!turtle.contains("shade"), "{turtle}");
+    assert!(!turtle.contains("qualifies"), "{turtle}");
+}
+
+#[test]
+fn rdf_output_file_and_determinism() {
+    let home = TempHome::ready("rdf-det");
+    let stdout = home.ok(&["publish", "rdf"]);
+
+    let file = home.out_dir("dump.ttl");
+    let silent = home.ok(&["publish", "rdf", "-o", file.to_str().unwrap()]);
+    assert!(silent.is_empty(), "{silent}");
+    assert_eq!(read(&file), stdout, "file and stdout dumps differ");
+
+    // Two runs emit byte-identical Turtle.
+    assert_eq!(home.ok(&["publish", "rdf"]), stdout);
+}
