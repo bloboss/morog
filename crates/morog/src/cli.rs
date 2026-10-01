@@ -22,11 +22,20 @@ pub enum Command {
     Index {
         /// Vault root directory (default: current directory)
         vault: Option<PathBuf>,
+        /// Rebuild from scratch into a temp file, then swap it in atomically
+        #[arg(long)]
+        full: bool,
+        /// Keep running and re-index on file changes
+        #[arg(long)]
+        watch: bool,
     },
     /// Query the index (notes, relations, citations)
     Query {
-        /// Query expression
+        /// A single SELECT statement; the v_* views are the public API
         query: String,
+        /// Vault root directory the index belongs to (default: current directory)
+        #[arg(long)]
+        vault: Option<PathBuf>,
     },
     /// Research workflows over the STA graph (open questions, orphans, coverage)
     Research,

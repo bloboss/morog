@@ -10,3 +10,4 @@ morg-parser.workspace = true
 morog-bib.workspace = true
 morog-index.workspace = true
 morog-sema.workspace = true
+notify.workspace = true

@@ -131,10 +131,10 @@ fn render_json(diagnostics: &[Diagnostic]) -> String {
         let _ = write!(
             out,
             "\n  {{\"file\": \"{}\", \"line\": {line}, \"col\": {col}, \"code\": \"{}\", \"severity\": \"{}\", \"message\": \"{}\"}}",
-            json_escape(&d.file.display().to_string()),
+            crate::json::escape(&d.file.display().to_string()),
             d.code.as_str(),
             d.severity.as_str(),
-            json_escape(&d.message)
+            crate::json::escape(&d.message)
         );
     }
     if !diagnostics.is_empty() {
@@ -142,37 +142,4 @@ fn render_json(diagnostics: &[Diagnostic]) -> String {
     }
     out.push_str("]\n");
     out
-}
-
-/// Escape a string for inclusion in a JSON string literal.
-fn json_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::json_escape;
-
-    #[test]
-    fn json_escaping() {
-        assert_eq!(json_escape("plain"), "plain");
-        assert_eq!(json_escape("a\"b\\c"), "a\\\"b\\\\c");
-        assert_eq!(json_escape("line\nbreak"), "line\\nbreak");
-        assert_eq!(json_escape("caf\u{e9} \u{1f980}"), "caf\u{e9} \u{1f980}");
-        assert_eq!(json_escape("\u{1}"), "\\u0001");
-    }
 }
