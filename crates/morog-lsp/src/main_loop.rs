@@ -128,6 +128,16 @@ fn server_capabilities(encoding: PositionEncoding) -> ServerCapabilities {
             ..Default::default()
         }),
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
+        inlay_hint_provider: Some(lsp_types::OneOf::Left(true)),
+        semantic_tokens_provider: Some(
+            lsp_types::SemanticTokensServerCapabilities::SemanticTokensOptions(
+                lsp_types::SemanticTokensOptions {
+                    legend: handlers::semantic_tokens::legend(),
+                    full: Some(lsp_types::SemanticTokensFullOptions::Bool(true)),
+                    ..Default::default()
+                },
+            ),
+        ),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         references_provider: Some(lsp_types::OneOf::Left(true)),
         document_symbol_provider: Some(lsp_types::OneOf::Left(true)),
@@ -245,6 +255,16 @@ fn on_request(state: &mut GlobalState, request: Request) {
                 p.text_document_position.text_document.uri.clone()
             ),
             handlers::completion::handle
+        ),
+        r::InlayHintRequest::METHOD => handle!(
+            r::InlayHintRequest,
+            |p: &lsp_types::InlayHintParams| Some(p.text_document.uri.clone()),
+            handlers::inlay_hint::handle
+        ),
+        r::SemanticTokensFullRequest::METHOD => handle!(
+            r::SemanticTokensFullRequest,
+            |p: &lsp_types::SemanticTokensParams| Some(p.text_document.uri.clone()),
+            handlers::semantic_tokens::handle
         ),
         r::HoverRequest::METHOD => handle!(
             r::HoverRequest,
