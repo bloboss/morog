@@ -18,10 +18,23 @@ use crate::cli::BibArgs;
 /// bibliography-backed lints: `sta::unknown-citekey` and the
 /// source-id-matches-key half of `sta::id`.
 pub fn run(paths: Vec<PathBuf>, format: &str, bib_args: &BibArgs) -> ExitCode {
-    let store = match crate::bib::load(bib_args, "lint") {
+    run_pass(paths, format, bib_args, false, "lint")
+}
+
+/// The shared lint pass behind `morog lint` and `morog research check`.
+/// With `sta_only`, plain morg notes (no `kind:` and no schema errors) are
+/// excluded from both passes and the file count.
+pub fn run_pass(
+    paths: Vec<PathBuf>,
+    format: &str,
+    bib_args: &BibArgs,
+    sta_only: bool,
+    cmd: &str,
+) -> ExitCode {
+    let store = match crate::bib::load(bib_args, cmd) {
         Ok(store) => store,
         Err(message) => {
-            eprintln!("morog lint: {message}");
+            eprintln!("morog {cmd}: {message}");
             return ExitCode::FAILURE;
         }
     };
@@ -52,12 +65,18 @@ pub fn run(paths: Vec<PathBuf>, format: &str, bib_args: &BibArgs) -> ExitCode {
         let source = match std::fs::read_to_string(&path) {
             Ok(source) => source,
             Err(err) => {
-                eprintln!("morog lint: cannot read {}: {err}", path.display());
+                eprintln!("morog {cmd}: cannot read {}: {err}", path.display());
                 continue;
             }
         };
         let parsed = morg_parser::parse_document(&source);
         let analysis = morog_sema::analyze_document(&parsed.document);
+        if sta_only
+            && analysis.meta == morog_sema::NoteMeta::Plain
+            && analysis.meta_errors.is_empty()
+        {
+            continue;
+        }
         diagnostics.extend(morog_sema::lint_file(&path, &analysis, &config, bib));
         analyses.push((path, analysis));
     }
@@ -87,9 +106,9 @@ pub fn run(paths: Vec<PathBuf>, format: &str, bib_args: &BibArgs) -> ExitCode {
 }
 
 /// Recursively collect `*.md` / `*.morg` files, skipping dot-entries.
-fn collect_notes(dir: &Path, out: &mut Vec<PathBuf>) {
+pub fn collect_notes(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        eprintln!("morog lint: cannot read directory {}", dir.display());
+        eprintln!("morog: cannot read directory {}", dir.display());
         return;
     };
     for entry in entries.flatten() {

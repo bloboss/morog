@@ -1,8 +1,8 @@
 //! `morog` — research toolkit CLI over the Source-Topic-Argument note model.
 //!
-//! `lint` (M2), `index`, and `query` (M4) are implemented; the other
-//! subcommands are stubs while the toolkit is scaffolded. See `../plan.md`
-//! (repository sibling) for the design document.
+//! `lint` (M2), `index`, `query` (M4), and `research` (M5) are implemented;
+//! the other subcommands are stubs while the toolkit is scaffolded. See
+//! `../plan.md` (repository sibling) for the design document.
 
 mod bib;
 mod cli;
@@ -10,6 +10,7 @@ mod index;
 mod json;
 mod lint;
 mod query;
+mod research;
 
 use std::process::ExitCode;
 
@@ -29,7 +30,7 @@ fn main() -> ExitCode {
             return index::run(vault, full, watch, &cli.format, &bib);
         }
         Command::Query { query, vault } => return query::run(&query, vault, &cli.format),
-        Command::Research => "research",
+        Command::Research { command } => return research::run(command, &cli.format),
         Command::Graph { .. } => "graph",
         Command::Lint { files, bib } => return lint::run(files, &cli.format, &bib),
     };

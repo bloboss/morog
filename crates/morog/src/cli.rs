@@ -39,8 +39,11 @@ pub enum Command {
         #[arg(long)]
         vault: Option<PathBuf>,
     },
-    /// Research workflows over the STA graph (open questions, orphans, coverage)
-    Research,
+    /// Research workflows over the STA graph (create, list, check notes)
+    Research {
+        #[command(subcommand)]
+        command: ResearchCommand,
+    },
     /// Emit the discourse graph as DOT
     Graph {
         /// Output file (default: stdout)
@@ -50,6 +53,57 @@ pub enum Command {
     /// Lint STA notes (frontmatter, provenance, relations)
     Lint {
         /// Markdown files or directories to lint
+        files: Vec<PathBuf>,
+        #[command(flatten)]
+        bib: BibArgs,
+    },
+}
+
+/// The `morog research` subcommands (plan §7 M5): note creation from the
+/// typed STA schemas, a vault listing, and an STA-restricted lint pass.
+#[derive(Subcommand)]
+pub enum ResearchCommand {
+    /// Create a source note for a bibliography key (the id IS the key)
+    Source {
+        /// Bibrat citation key; becomes the note id and file name
+        key: String,
+        /// Vault root directory to create the note in (default: current directory)
+        #[arg(long, value_name = "DIR")]
+        vault: Option<PathBuf>,
+        #[command(flatten)]
+        bib: BibArgs,
+    },
+    /// Create a topic note (id slugified from TITLE)
+    Topic {
+        /// Note title
+        title: String,
+        /// Seed the body with one evidence block citing KEY (repeatable)
+        #[arg(long = "cite", value_name = "KEY")]
+        cites: Vec<String>,
+        /// Vault root directory to create the note in (default: current directory)
+        #[arg(long, value_name = "DIR")]
+        vault: Option<PathBuf>,
+    },
+    /// Create an argument note (id slugified from TITLE)
+    Argument {
+        /// Note title
+        title: String,
+        /// Declare a relation to ID (optionally ID#anchor), e.g.
+        /// `--to specific-leaf-area:supports:analyze` (repeatable)
+        #[arg(long = "to", value_name = "ID:STANCE[:OP]")]
+        to: Vec<String>,
+        /// Vault root directory to create the note in (default: current directory)
+        #[arg(long, value_name = "DIR")]
+        vault: Option<PathBuf>,
+    },
+    /// Tabulate the vault's STA notes by kind, status, and title
+    List {
+        /// Vault root directory (default: current directory)
+        vault: Option<PathBuf>,
+    },
+    /// Lint the vault restricted to STA notes (alias for `morog lint`)
+    Check {
+        /// Markdown files or directories to check
         files: Vec<PathBuf>,
         #[command(flatten)]
         bib: BibArgs,
