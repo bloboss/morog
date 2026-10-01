@@ -1,27 +1,80 @@
-//! Disposable SQLite index for the morog research toolkit.
+//! Disposable SQLite index for the morog research toolkit (plan §3).
 //!
-//! The index is a **cache, never a source of truth**: it is rebuilt
-//! asynchronously from read-only access to the vault and can be deleted at
-//! any time. It stores the `FileFacts` extracted by `morog-sema` (notes,
-//! relations, citations, block anchors) and answers the queries behind
-//! `morog query`, `morog research`, and `morog graph`.
-//!
-//! `rusqlite` is declared in the workspace dependencies but not wired in
-//! yet; only cache-path resolution is implemented.
+//! The index is a **cache, never a source of truth**: it is rebuilt from
+//! read-only access to the vault and can be deleted at any time. It stores
+//! the `FileFacts` extracted by `morog-sema` (notes, relations, citations,
+//! block anchors) and answers the queries behind `morog query`,
+//! `morog research`, and `morog graph`.
 
 use std::path::{Path, PathBuf};
 
-pub mod schema {
-    //! SQLite schema and migrations (not yet implemented).
+pub mod pipeline;
+pub mod query;
+pub mod schema;
+pub mod store;
+
+pub use pipeline::{IndexStats, index_vault};
+pub use query::{QueryOutput, Value, run_query};
+pub use schema::SCHEMA_VERSION;
+pub use store::{delete_file_rows, load_file_facts, store_file_facts};
+
+/// Everything that can go wrong while building or querying the index.
+#[derive(Debug)]
+pub enum Error {
+    Io(std::io::Error),
+    Sql(rusqlite::Error),
+    /// The database carries a different `user_version` (read-only open only;
+    /// writers rebuild instead — plan §3.1 principle 4).
+    SchemaVersion {
+        found: i64,
+        expected: i64,
+    },
+    /// `morog query` was given something other than a single SELECT.
+    NotSelect,
+    /// No index database exists yet for this vault.
+    MissingIndex(PathBuf),
+    /// Stored rows that cannot be mapped back to facts.
+    Corrupt(String),
 }
 
-pub mod build {
-    //! Asynchronous index (re)build from a read-only vault walk
-    //! (not yet implemented).
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "io error: {e}"),
+            Self::Sql(e) => write!(f, "sqlite error: {e}"),
+            Self::SchemaVersion { found, expected } => write!(
+                f,
+                "index schema version {found} != {expected}; run `morog index` to rebuild"
+            ),
+            Self::NotSelect => write!(f, "only a single SELECT statement is allowed"),
+            Self::MissingIndex(path) => {
+                write!(f, "no index at {}; run `morog index` first", path.display())
+            }
+            Self::Corrupt(msg) => write!(f, "corrupt index: {msg}"),
+        }
+    }
 }
 
-pub mod query {
-    //! Typed read queries over the index (not yet implemented).
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            Self::Sql(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl From<rusqlite::Error> for Error {
+    fn from(e: rusqlite::Error) -> Self {
+        Self::Sql(e)
+    }
 }
 
 /// The cache database path for a vault:

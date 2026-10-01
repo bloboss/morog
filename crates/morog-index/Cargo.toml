@@ -6,3 +6,8 @@ license.workspace = true
 
 [dependencies]
 blake3.workspace = true
+ignore.workspace = true
+morg-parser.workspace = true
+morog-sema.workspace = true
+rayon.workspace = true
+rusqlite.workspace = true
