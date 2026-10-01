@@ -93,6 +93,16 @@ pub enum PublishCommand {
         #[arg(long, value_name = "DIR")]
         vault: Option<PathBuf>,
     },
+    /// Write one JSON-LD micropublication bundle per published argument:
+    /// the thesis as principal claim plus its evidence support graph
+    Micropub {
+        /// Output directory (default: ./micropub)
+        #[arg(short, long, value_name = "DIR")]
+        output: Option<PathBuf>,
+        /// Vault root directory the index belongs to (default: current directory)
+        #[arg(long, value_name = "DIR")]
+        vault: Option<PathBuf>,
+    },
 }
 
 /// The `morog research` subcommands (plan §7 M5): note creation from the

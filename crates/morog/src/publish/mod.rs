@@ -11,6 +11,7 @@
 //! Output is deterministic — every iteration is over sorted data — so a
 //! regenerated site or dump diffs cleanly.
 
+mod micropub;
 mod rdf;
 mod site;
 
@@ -38,6 +39,11 @@ pub fn run(command: PublishCommand, format: &str) -> ExitCode {
             format,
         ),
         PublishCommand::Rdf { output, vault } => rdf::run(vault, output),
+        PublishCommand::Micropub { output, vault } => micropub::run(
+            vault,
+            output.unwrap_or_else(|| PathBuf::from("micropub")),
+            format,
+        ),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

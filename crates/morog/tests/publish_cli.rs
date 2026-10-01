@@ -420,3 +420,95 @@ fn rdf_output_file_and_determinism() {
     // Two runs emit byte-identical Turtle.
     assert_eq!(home.ok(&["publish", "rdf"]), stdout);
 }
+
+// ------------------------------------------------------------- micropub
+
+/// Find the @graph node with the given @id.
+fn node<'a>(graph: &'a [serde_json::Value], id: &str) -> &'a serde_json::Value {
+    graph
+        .iter()
+        .find(|n| n["@id"] == id)
+        .unwrap_or_else(|| panic!("no node `{id}` in {graph:?}"))
+}
+
+#[test]
+fn micropub_bundles_one_argument_support_graph_each() {
+    let home = TempHome::ready("micropub");
+    let dir = home.out_dir("mp");
+    home.ok(&["publish", "micropub", "-o", dir.to_str().unwrap()]);
+
+    // One bundle per published argument, named by its readable id.
+    let mut files: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    files.sort();
+    assert_eq!(files, ["allocation-argument.jsonld"]);
+
+    let text = read(&dir.join("allocation-argument.jsonld"));
+    let bundle: serde_json::Value = serde_json::from_str(&text).expect("bundle parses as JSON");
+    let context = bundle["@context"].as_object().unwrap();
+    assert_eq!(context["mp"], "http://purl.org/mp/");
+    let graph = bundle["@graph"].as_array().unwrap();
+
+    // The micropublication argues its thesis as the principal claim.
+    let arg_iri = format!("{BASE}/n/{ARG_UUID}");
+    let claim_id = format!("{arg_iri}#claim");
+    let root = node(graph, &arg_iri);
+    assert_eq!(root["@type"], "mp:Micropublication");
+    assert_eq!(root["mp:argues"]["@id"], claim_id);
+    let claim = node(graph, &claim_id);
+    assert_eq!(claim["@type"], "mp:Claim");
+    assert_eq!(
+        claim["text"],
+        "Leaf economics variation is biomass allocation in disguise."
+    );
+
+    // Support graph: evidence blocks as statements, stance → mp predicate,
+    // Bloom op preserved.
+    let spectrum = node(graph, &format!("{BASE}/n/{TOPIC_UUID}#spectrum"));
+    assert_eq!(spectrum["@type"], "mp:Statement");
+    assert_eq!(spectrum["mp:supports"]["@id"], claim_id);
+    assert_eq!(spectrum["morog:op"], "analyze");
+    assert!(
+        spectrum["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("SLA anchors"),
+        "{spectrum}"
+    );
+    let photo = node(graph, &format!("{BASE}/n/{TOPIC_UUID}#photosynthesis"));
+    assert_eq!(photo["mp:challenges"]["@id"], claim_id);
+
+    // Attributions: statements derive from reference nodes carrying the
+    // bibliography metadata. The published source note is the reference id
+    // where one exists; a bib-only key becomes a bundle-local node.
+    let wright_iri = format!("{BASE}/n/{WRIGHT_UUID}");
+    assert_eq!(spectrum["prov:wasDerivedFrom"][0]["@id"], wright_iri);
+    let wright = node(graph, &wright_iri);
+    assert_eq!(wright["name"], "The worldwide leaf economics spectrum");
+    assert_eq!(
+        wright["dcterms:identifier"],
+        "https://doi.org/10.1038/nature02403"
+    );
+    let poorter = node(graph, &format!("{arg_iri}#ref-poorter_biomass_2012"));
+    assert_eq!(poorter["morog:citekey"], "poorter_biomass_2012");
+
+    // The qualifies relation targets a private topic: it stays out, and the
+    // private note leaks into nothing.
+    assert!(!text.contains("shade"), "{text}");
+    assert!(!text.contains(PRIVATE_UUID), "{text}");
+    assert!(!text.contains("qualifies"), "{text}");
+
+    // Deterministic output.
+    home.ok(&[
+        "publish",
+        "micropub",
+        "-o",
+        home.out_dir("mp2").to_str().unwrap(),
+    ]);
+    assert_eq!(
+        text,
+        read(&home.out_dir("mp2").join("allocation-argument.jsonld"))
+    );
+}
