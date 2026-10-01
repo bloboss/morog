@@ -19,9 +19,10 @@ Design document: [`../plan.md`](../plan.md).
 | [`crates/morog-lsp`](crates/morog-lsp) | lib | Language server, rust-analyzer-style: diagnostics, navigation, completion, rename, code actions |
 | [`crates/morog-bench`](crates/morog-bench) | bin | Synthetic-vault generator and timing harness (plan M0) |
 
-Parsing is provided by the sibling checkout's
-[`morg-parser`](../morg/crates/morg-parser) as a path dependency, so a `morg`
-checkout must sit next to this repository.
+Parsing is provided by [`morg-parser`](../morg/crates/morg-parser) as a git
+dependency pinned by revision in the workspace `Cargo.toml`; see the comment
+there for the `[patch]` stanza that redirects it to a sibling checkout during
+local development.
 
 ## Commands
 
