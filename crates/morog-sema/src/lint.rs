@@ -4,8 +4,9 @@
 //! File-level: `sta::kind`, the single-file parts of `sta::id` (missing /
 //! not slug-shaped, plus source-id-matches-bibliography when a [`BibStore`]
 //! is supplied), `sta::uncited-block`, `sta::topic-too-long`,
-//! `sta::argument-arity`, and `sta::unknown-citekey` (skipped without a
-//! store).
+//! `sta::argument-arity`, `tag::shape-mismatch` (a custom tag's argument
+//! not matching its declared pattern/kind, plan §10 T1), and
+//! `sta::unknown-citekey` (skipped without a store).
 //!
 //! Vault-level ([`lint_vault`]): `sta::id` uniqueness, `sta::relation-target`
 //! (unresolved `to:`, argument → source), `sta::positional-address`, and
@@ -64,6 +65,9 @@ pub enum LintCode {
     UnknownCitekey,
     PositionalAddress,
     PubLeak,
+    /// A custom tag's argument does not match its declared pattern/kind
+    /// (plan §10 T1). Same wording as `morg lint`.
+    TagShapeMismatch,
 }
 
 impl LintCode {
@@ -78,6 +82,7 @@ impl LintCode {
             Self::UnknownCitekey => "sta::unknown-citekey",
             Self::PositionalAddress => "sta::positional-address",
             Self::PubLeak => "pub::leak",
+            Self::TagShapeMismatch => "tag::shape-mismatch",
         }
     }
 
@@ -88,9 +93,11 @@ impl LintCode {
             | Self::RelationTarget
             | Self::UnknownCitekey
             | Self::PositionalAddress => Severity::Error,
-            Self::UncitedBlock | Self::TopicTooLong | Self::ArgumentArity | Self::PubLeak => {
-                Severity::Warning
-            }
+            Self::UncitedBlock
+            | Self::TopicTooLong
+            | Self::ArgumentArity
+            | Self::PubLeak
+            | Self::TagShapeMismatch => Severity::Warning,
         }
     }
 }
@@ -215,6 +222,25 @@ pub fn lint_file(
                 path,
                 None,
             ));
+        }
+    }
+
+    // tag::shape-mismatch — a declared custom tag whose argument does not
+    // have the declared shape (plan §10 T1). Never a parse error: the tag
+    // keeps its raw argument; the lint message matches `morg lint`.
+    for block in &facts.blocks {
+        for custom in &block.customs {
+            if custom.shape_mismatch {
+                out.push(Diagnostic::new(
+                    LintCode::TagShapeMismatch,
+                    format!(
+                        "argument does not match the declared pattern for #{}",
+                        custom.name
+                    ),
+                    path,
+                    Some(custom.span),
+                ));
+            }
         }
     }
 

@@ -395,3 +395,92 @@ fn vault_lint_pub_leak() {
             .any(|d| d.file.ends_with("private-topic.md") || d.file.ends_with("private-source.md"))
     );
 }
+
+// ---------------------------------------------------------------------------
+// User-defined custom tags (plan §10 T1)
+// ---------------------------------------------------------------------------
+
+fn book_table() -> morg_parser::TagTable {
+    morg_parser::TagTable::build([
+        morg_parser::TagDeclaration {
+            name: "book".to_owned(),
+            pattern: Some(r#""(?<title>[^"]+)"\s+by\s+(?<author>.+)"#.to_owned()),
+            kind: None,
+        },
+        morg_parser::TagDeclaration {
+            name: "reading-time".to_owned(),
+            pattern: None,
+            kind: Some(morg_parser::CustomArgKind::Duration),
+        },
+    ])
+    .unwrap()
+}
+
+fn analyze_with(source: &str, table: &morg_parser::TagTable) -> Analysis {
+    let result = morg_parser::parse_document_with(source, table);
+    analyze_document(&result.document)
+}
+
+#[test]
+fn custom_tag_fields_surface_with_spans() {
+    let source = "---\nid: t\nkind: topic\n---\n\nNotes [@k]. #book \"Dune\" by Frank Herbert\n\nQuick [@k]. #reading-time 1h30m\n";
+    let a = analyze_with(source, &book_table());
+    let blocks = &a.facts.blocks;
+
+    let book = &blocks[0].customs[0];
+    assert_eq!(book.name, "book");
+    assert!(!book.shape_mismatch);
+    let groups: Vec<&str> = book.fields.iter().map(|f| f.group.as_str()).collect();
+    assert_eq!(groups, ["title", "author"]);
+    // Pattern-group spans slice the source exactly.
+    for field in &book.fields {
+        assert_eq!(&source[field.span.start..field.span.end], field.value);
+    }
+    assert_eq!(book.fields[0].value, "Dune");
+    assert_eq!(book.fields[1].value, "Frank Herbert");
+    // The occurrence span covers the tag itself, for diagnostics.
+    assert!(source[book.span.start..book.span.end].starts_with("#book"));
+
+    // Kind shorthand: one field named after the kind, canonical rendering.
+    let time = &blocks[1].customs[0];
+    assert_eq!(time.name, "reading-time");
+    assert_eq!(time.fields.len(), 1);
+    assert_eq!(time.fields[0].group, "duration");
+    assert_eq!(time.fields[0].value, "1h30m");
+}
+
+#[test]
+fn shape_mismatch_is_a_warning_lint() {
+    let source = "---\nid: t\nkind: topic\n---\n\nBad [@k]. #book untitled scrawl\n";
+    let a = analyze_with(source, &book_table());
+    let custom = &a.facts.blocks[0].customs[0];
+    assert!(custom.shape_mismatch);
+    assert!(custom.fields.is_empty());
+
+    let diags = lint_file(Path::new("test.md"), &a, &LintConfig::default(), None);
+    let mismatch: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == LintCode::TagShapeMismatch)
+        .collect();
+    assert_eq!(mismatch.len(), 1);
+    assert_eq!(mismatch[0].severity, Severity::Warning);
+    assert_eq!(mismatch[0].code.as_str(), "tag::shape-mismatch");
+    // Wording matches `morg lint` exactly.
+    assert_eq!(
+        mismatch[0].message,
+        "argument does not match the declared pattern for #book"
+    );
+    // The diagnostic points at the tag occurrence.
+    let span = mismatch[0].span.unwrap();
+    assert!(source[span.start..].starts_with("#book"));
+}
+
+#[test]
+fn undeclared_tags_stay_unknown_without_a_table() {
+    // The same source parsed without a table: no customs, no mismatch lint.
+    let source = "---\nid: t\nkind: topic\n---\n\nBad [@k]. #book untitled scrawl\n";
+    let a = analyze(source);
+    assert!(a.facts.blocks[0].customs.is_empty());
+    let diags = lint(source);
+    assert!(!codes(&diags).contains(&LintCode::TagShapeMismatch));
+}

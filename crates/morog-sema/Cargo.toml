@@ -7,4 +7,6 @@ license.workspace = true
 [dependencies]
 morg-parser.workspace = true
 morog-bib.workspace = true
+serde.workspace = true
+toml.workspace = true
 uuid.workspace = true

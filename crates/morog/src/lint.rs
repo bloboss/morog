@@ -65,8 +65,8 @@ pub fn run_pass(
         .find(|root| root.is_dir())
         .cloned()
         .unwrap_or_else(|| PathBuf::from("."));
-    let config = match crate::config::load(&vault_root) {
-        Ok(config) => config.lint_config(),
+    let (config, tag_table) = match crate::config::load(&vault_root) {
+        Ok(config) => (config.lint_config(), config.tag_table()),
         Err(message) => {
             eprintln!("morog {cmd}: {message}");
             return ExitCode::FAILURE;
@@ -83,7 +83,9 @@ pub fn run_pass(
                 continue;
             }
         };
-        let parsed = morg_parser::parse_document(&source);
+        // Parse against the `[tags]` table so declared custom tags resolve
+        // and `tag::shape-mismatch` can fire (plan §10 T1).
+        let parsed = morg_parser::parse_document_with(&source, &tag_table);
         let analysis = morog_sema::analyze_document(&parsed.document);
         if sta_only
             && analysis.meta == morog_sema::NoteMeta::Plain

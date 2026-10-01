@@ -11,14 +11,19 @@
 //!   relations, per-block citations and anchors, and `id:` references.
 //! - **Lints** ([`lint`]) — the provenance and structural checks of plan
 //!   §2.5, reported with spans.
+//! - **User tag configuration** ([`tags`]) — the `[tags]` section resolved
+//!   across the vault-local, morog, and morg config layers into the
+//!   `morg-parser` `TagTable` (plan §10 T1), shared by the CLI and the LSP.
 
 pub mod facts;
 pub mod lint;
 pub mod meta;
+pub mod tags;
 pub mod types;
 
 pub use facts::{
-    BlockFacts, BlockUnit, CiteRef, FileFacts, IdRef, NoteFacts, RelationFacts, extract_facts,
+    BlockFacts, BlockUnit, CiteRef, CustomTagFacts, FileFacts, IdRef, NoteFacts, RelationFacts,
+    extract_facts,
 };
 pub use lint::{Diagnostic, LintCode, LintConfig, Severity, VaultNote, lint_file, lint_vault};
 pub use meta::{

@@ -880,6 +880,8 @@ version = "0.1.0"
 dependencies = [
  "morg-parser",
  "morog-bib",
+ "serde",
+ "toml",
  "uuid",
 ]
 

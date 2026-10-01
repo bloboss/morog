@@ -499,6 +499,7 @@ fn load_blocks(conn: &Connection, file_id: i64) -> Result<Vec<BlockFacts>, Error
                 unit,
                 citable,
                 cites: Vec::new(),
+                customs: Vec::new(),
                 span,
             })
         })

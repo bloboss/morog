@@ -6,7 +6,7 @@
 //! round-trip losslessly through simple rows (SQLite in M4) and be rebuilt
 //! from read-only vault access.
 
-use morg_parser::{Block, Document, InlineContent, InlineKind, Span, Tag, TagKind};
+use morg_parser::{Block, CustomField, Document, InlineContent, InlineKind, Span, Tag, TagKind};
 
 use crate::meta::NoteMeta;
 use crate::types::{ArgumentForm, CiteKey, NoteId, NoteKind, NoteUuid, RelationKind};
@@ -85,6 +85,25 @@ pub struct BlockFacts {
     pub citable: bool,
     /// Inline `[@key]` citations carried by the block.
     pub cites: Vec<CiteRef>,
+    /// User-declared custom tags carried by the block (plan §10 T1), in
+    /// document order.
+    pub customs: Vec<CustomTagFacts>,
+    pub span: Span,
+}
+
+/// One occurrence of a user-declared custom tag (a [`TagKind::Custom`] the
+/// parser resolved against the configured `TagTable`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CustomTagFacts {
+    /// The tag name (without the leading `#`).
+    pub name: String,
+    /// Extracted fields: one per matched named capture group, or one field
+    /// named after the `kind` shorthand. Empty on mismatch.
+    pub fields: Vec<CustomField>,
+    /// True when the argument did not match the declared pattern/kind —
+    /// surfaced as the `tag::shape-mismatch` lint.
+    pub shape_mismatch: bool,
+    /// Span of the whole tag, for diagnostics.
     pub span: Span,
 }
 
@@ -164,6 +183,7 @@ pub fn extract_facts(doc: &Document, meta: &NoteMeta) -> FileFacts {
             unit,
             citable,
             cites: scan.cites,
+            customs: scan.customs,
             span: block_span(block),
         });
         idx += 1;
@@ -265,6 +285,7 @@ struct BlockScan {
     /// Raw `id:` targets with their spans.
     id_refs: Vec<(String, Span)>,
     anchor: Option<String>,
+    customs: Vec<CustomTagFacts>,
     mine: bool,
     words: u32,
 }
@@ -278,6 +299,17 @@ impl BlockScan {
                 }
             }
             TagKind::Unknown { name, .. } if name == "mine" => self.mine = true,
+            TagKind::Custom {
+                name,
+                fields,
+                shape_mismatch,
+                ..
+            } => self.customs.push(CustomTagFacts {
+                name: name.clone(),
+                fields: fields.clone(),
+                shape_mismatch: *shape_mismatch,
+                span: tag.span,
+            }),
             _ => {}
         }
     }
