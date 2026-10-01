@@ -106,14 +106,20 @@ pub(crate) fn file_uri(snapshot: &Snapshot, file: FileId) -> Option<Url> {
 /// Case-insensitive subsequence match (`query` must already be lowercased)
 /// — the fuzzy matcher shared by workspace symbols and completion
 /// (plan §5.6: "matched fuzzily on id, title, and aliases").
+///
+/// The candidate is lowercased char by char, never allocated: completion
+/// runs this against every note in the vault inside the 20 ms budget
+/// (plan §5.7).
 pub(crate) fn fuzzy_match(query: &str, candidate: &str) -> bool {
     let mut chars = query.chars();
     let mut needle = match chars.next() {
         Some(c) => c,
         None => return true,
     };
-    for c in candidate.to_lowercase().chars() {
-        if c == needle {
+    for c in candidate.chars() {
+        let hit = c == needle
+            || (!c.is_ascii() || c.is_ascii_uppercase()) && c.to_lowercase().any(|lc| lc == needle);
+        if hit {
             match chars.next() {
                 Some(next) => needle = next,
                 None => return true,

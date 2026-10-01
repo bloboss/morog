@@ -29,6 +29,11 @@ use crate::handlers::{HandlerError, file_position, fuzzy_match};
 use crate::state::Snapshot;
 use crate::to_proto;
 
+/// Cap the open-ended item sources (targets, citekeys); a longer partial
+/// narrows the list (the workspace-symbol approach, within the completion
+/// budget of plan §5.7).
+const LIMIT: usize = 256;
+
 pub(crate) fn handle(
     snapshot: &Snapshot,
     params: CompletionParams,
@@ -152,7 +157,7 @@ fn target_items(snapshot: &Snapshot, partial: &str, range: Range) -> Vec<Complet
         return anchor_items(snapshot, id_part, anchor_part, range);
     }
     let query = partial.to_lowercase();
-    let mut items: Vec<CompletionItem> = Vec::new();
+    let mut hits: Vec<(&str, Option<&str>, CompletionItemKind)> = Vec::new();
     for fa in snapshot.analysis.files.values() {
         let note = &fa.facts.note;
         let Some(id) = &note.id else { continue };
@@ -168,12 +173,15 @@ fn target_items(snapshot: &Snapshot, partial: &str, range: Range) -> Vec<Complet
                 .is_some_and(|t| fuzzy_match(&query, t))
             || note.aliases.iter().any(|a| fuzzy_match(&query, a));
         if matched {
-            items.push(item(id.as_str(), item_kind, note.title.clone(), range));
+            hits.push((id.as_str(), note.title.as_deref(), item_kind));
         }
     }
-    items.sort_by(|a, b| a.label.cmp(&b.label));
-    items.dedup_by(|a, b| a.label == b.label);
-    items
+    hits.sort_by_key(|&(id, ..)| id);
+    hits.dedup_by_key(|&mut (id, ..)| id);
+    hits.truncate(LIMIT);
+    hits.into_iter()
+        .map(|(id, title, kind)| item(id, kind, title.map(str::to_owned), range))
+        .collect()
 }
 
 /// Anchor completion once the target id is fixed: `sla#e` offers the block
@@ -236,6 +244,7 @@ fn cite_items(snapshot: &Snapshot, partial: &str, range: Range) -> Vec<Completio
         })
         .collect();
     items.sort_by(|a, b| a.label.cmp(&b.label));
+    items.truncate(LIMIT);
     items
 }
 
