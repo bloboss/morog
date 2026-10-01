@@ -290,3 +290,86 @@ fn utf16_positions_in_diagnostics() {
 
     client.shutdown();
 }
+
+#[test]
+fn navigation_requests_over_open_documents() {
+    let mut client = Client::start(&["utf-8"], json!({ "vaultRoot": "/vault" }));
+    let sla_uri = "file:///vault/sla.md";
+    let arg_uri = "file:///vault/arg.md";
+
+    client.open(
+        sla_uri,
+        1,
+        "---\nid: sla\nkind: topic\ntitle: \"Specific leaf area\"\n---\n\n# Evidence\n\nSLA anchors the spectrum [@wright2004]. #anchor e1\n",
+    );
+    client.open(
+        arg_uri,
+        1,
+        "---\nid: arg\nkind: argument\ntitle: \"A\"\nthesis: \"It is allocation.\"\nrelations:\n  - { to: sla#e1, stance: supports, op: analyze }\n  - { to: sla, stance: qualifies }\n---\n",
+    );
+
+    // hover on the relation target `sla#e1` (line 6, inside "sla#e1").
+    let hover = client.request(
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": arg_uri },
+            "position": { "line": 6, "character": 11 },
+        }),
+    );
+    let value = hover["contents"]["value"].as_str().unwrap();
+    assert!(
+        value.contains("**topic** `sla` — Specific leaf area"),
+        "{value}"
+    );
+    assert!(value.contains("SLA anchors the spectrum"), "{value}");
+
+    // definition of the same target: the anchored block in sla.md.
+    let definition = client.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": arg_uri },
+            "position": { "line": 6, "character": 11 },
+        }),
+    );
+    assert_eq!(definition["uri"], sla_uri);
+    assert_eq!(definition["range"]["start"]["line"], 8);
+
+    // references on the topic's id declaration: both argument relations.
+    let references = client.request(
+        "textDocument/references",
+        json!({
+            "textDocument": { "uri": sla_uri },
+            "position": { "line": 1, "character": 5 },
+            "context": { "includeDeclaration": false },
+        }),
+    );
+    let refs = references.as_array().unwrap();
+    assert_eq!(refs.len(), 2);
+    assert!(refs.iter().all(|r| r["uri"] == arg_uri));
+
+    // documentSymbol on the topic: frontmatter + heading + evidence block.
+    let symbols = client.request(
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": sla_uri } }),
+    );
+    let names: Vec<&str> = symbols
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["topic sla", "Evidence"]);
+    assert_eq!(symbols[1]["children"][0]["name"], "@wright2004");
+
+    // workspace/symbol sees both notes, kind-prefixed.
+    let symbols = client.request("workspace/symbol", json!({ "query": "" }));
+    let names: Vec<&str> = symbols
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["argument arg", "topic sla"]);
+
+    client.shutdown();
+}

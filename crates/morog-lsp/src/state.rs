@@ -33,10 +33,7 @@ pub(crate) enum Task {
 /// the persistent maps (plan §5.2).
 #[derive(Clone)]
 pub(crate) struct Snapshot {
-    // Read by the L2 navigation handlers, which land in the next layer.
-    #[allow(dead_code)]
     pub analysis: Analysis,
-    #[allow(dead_code)]
     pub encoding: PositionEncoding,
 }
 

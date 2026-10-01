@@ -71,6 +71,8 @@ pub struct Analysis {
     pub files: imbl::HashMap<FileId, Arc<FileAnalysis>>,
     /// Path of each known file (handlers turn these back into URIs).
     pub paths: imbl::HashMap<FileId, Arc<Path>>,
+    /// The reverse map, for resolving request URIs on worker threads.
+    pub by_path: imbl::HashMap<Arc<Path>, FileId>,
     /// The cross-file maps: `by_id`, `backrefs` (plan §5.2).
     pub xref: Xref,
     /// The bibliography table (plan §4.2).
@@ -103,6 +105,7 @@ impl Analysis {
         }
         self.xref.add_file(file, &new.facts);
         self.files.insert(file, new);
+        self.by_path.insert(Arc::clone(&path), file);
         self.paths.insert(file, path);
         touched
     }
@@ -116,8 +119,15 @@ impl Analysis {
             }
             self.xref.remove_file(file, &old.facts);
         }
-        self.paths.remove(&file);
+        if let Some(path) = self.paths.remove(&file) {
+            self.by_path.remove(&path);
+        }
         touched
+    }
+
+    /// Look a file up by its path.
+    pub fn file_id(&self, path: &Path) -> Option<FileId> {
+        self.by_path.get(path).copied()
     }
 
     pub fn file(&self, file: FileId) -> Option<&Arc<FileAnalysis>> {

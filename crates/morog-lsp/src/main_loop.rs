@@ -5,7 +5,7 @@
 use std::time::Instant;
 
 use crossbeam_channel::select;
-use lsp_server::{Connection, ErrorCode, Message, Notification, Request};
+use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::notification::Notification as _;
 use lsp_types::{
     InitializeParams, PositionEncodingKind, SaveOptions, ServerCapabilities,
@@ -14,6 +14,7 @@ use lsp_types::{
 };
 
 use crate::config::Config;
+use crate::handlers;
 use crate::state::{GlobalState, Task};
 use crate::{Error, PositionEncoding};
 
@@ -79,6 +80,11 @@ fn server_capabilities(encoding: PositionEncoding) -> ServerCapabilities {
                 ..Default::default()
             },
         )),
+        hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
+        definition_provider: Some(lsp_types::OneOf::Left(true)),
+        references_provider: Some(lsp_types::OneOf::Left(true)),
+        document_symbol_provider: Some(lsp_types::OneOf::Left(true)),
+        workspace_symbol_provider: Some(lsp_types::OneOf::Left(true)),
         ..Default::default()
     }
 }
@@ -136,16 +142,77 @@ fn next_event(connection: &Connection, state: &GlobalState) -> Event {
 }
 
 fn on_request(state: &mut GlobalState, request: Request) {
-    // The navigation handlers (hover, definition, references, symbols)
-    // arrive with L2; everything else is politely refused — through the
-    // worker path, so the response pipeline has a single shape.
-    let method = request.method;
-    state.dispatch(request.id, None, move |_snapshot| {
-        Err((
-            ErrorCode::MethodNotFound,
-            format!("morog-lsp does not handle `{method}` yet"),
-        ))
-    });
+    use lsp_types::request as r;
+    use lsp_types::request::Request as _;
+
+    /// Parse params, extract the stale-guard URI, and dispatch `f` onto the
+    /// rayon pool (plan §5.2).
+    macro_rules! handle {
+        ($request_type:ty, $uri:expr, $f:expr) => {{
+            match serde_json::from_value::<<$request_type as r::Request>::Params>(request.params) {
+                Ok(params) => {
+                    #[allow(clippy::redundant_closure_call)]
+                    let uri: Option<lsp_types::Url> = ($uri)(&params);
+                    state.dispatch(request.id, uri.as_ref(), move |snapshot| {
+                        $f(snapshot, params).and_then(|result| {
+                            serde_json::to_value(result)
+                                .map_err(|e| (ErrorCode::InternalError, e.to_string()))
+                        })
+                    });
+                }
+                Err(e) => state.respond(Response::new_err(
+                    request.id,
+                    ErrorCode::InvalidParams as i32,
+                    e.to_string(),
+                )),
+            }
+        }};
+    }
+
+    match request.method.as_str() {
+        r::HoverRequest::METHOD => handle!(
+            r::HoverRequest,
+            |p: &lsp_types::HoverParams| Some(
+                p.text_document_position_params.text_document.uri.clone()
+            ),
+            handlers::hover::handle
+        ),
+        r::GotoDefinition::METHOD => handle!(
+            r::GotoDefinition,
+            |p: &lsp_types::GotoDefinitionParams| Some(
+                p.text_document_position_params.text_document.uri.clone()
+            ),
+            handlers::goto_definition::handle
+        ),
+        r::References::METHOD => handle!(
+            r::References,
+            |p: &lsp_types::ReferenceParams| Some(
+                p.text_document_position.text_document.uri.clone()
+            ),
+            handlers::references::handle
+        ),
+        r::DocumentSymbolRequest::METHOD => handle!(
+            r::DocumentSymbolRequest,
+            |p: &lsp_types::DocumentSymbolParams| Some(p.text_document.uri.clone()),
+            handlers::document_symbol::handle
+        ),
+        r::WorkspaceSymbolRequest::METHOD => handle!(
+            r::WorkspaceSymbolRequest,
+            |_: &lsp_types::WorkspaceSymbolParams| None::<lsp_types::Url>,
+            handlers::workspace_symbol::handle
+        ),
+        _ => {
+            // Everything else is politely refused — through the worker
+            // path, so the response pipeline has a single shape.
+            let method = request.method;
+            state.dispatch(request.id, None, move |_snapshot| {
+                Err((
+                    ErrorCode::MethodNotFound,
+                    format!("morog-lsp does not handle `{method}` yet"),
+                ))
+            });
+        }
+    }
 }
 
 fn on_notification(state: &mut GlobalState, notification: Notification) {

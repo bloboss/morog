@@ -22,6 +22,7 @@ pub mod analysis;
 pub mod config;
 mod diagnostics;
 mod from_proto;
+mod handlers;
 pub mod main_loop;
 mod state;
 mod to_proto;

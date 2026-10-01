@@ -1,0 +1,199 @@
+//! One module per LSP method (plan §5.1), plus the plumbing they share.
+//!
+//! Handlers run on the rayon pool against a [`Snapshot`]; they never touch
+//! the vfs. Text comes from the snapshot's `FileAnalysis` when the file was
+//! parsed this session (open buffers included), and lazily from disk for
+//! facts-only cold-start entries — never a reparse.
+
+pub(crate) mod document_symbol;
+pub(crate) mod goto_definition;
+pub(crate) mod hover;
+pub(crate) mod references;
+pub(crate) mod workspace_symbol;
+
+use std::sync::Arc;
+
+use lsp_server::ErrorCode;
+use lsp_types::{Location, TextDocumentPositionParams, Url};
+use morg_parser::{LineIndex, Span};
+
+use crate::analysis::FileAnalysis;
+use crate::state::Snapshot;
+use crate::vfs::FileId;
+use crate::{from_proto, to_proto};
+
+/// Handler error surface, matching `GlobalState::dispatch`.
+pub(crate) type HandlerError = (ErrorCode, String);
+
+/// A resolved `TextDocumentPositionParams`: the file's analysis and text,
+/// and the UTF-8 byte offset of the cursor.
+pub(crate) struct FilePosition {
+    pub fa: Arc<FileAnalysis>,
+    pub text: Arc<str>,
+    pub offset: usize,
+}
+
+/// Resolve a protocol position. `Ok(None)` means "unknown file or no text":
+/// the handler answers null rather than erroring.
+pub(crate) fn file_position(
+    snapshot: &Snapshot,
+    params: &TextDocumentPositionParams,
+) -> Option<FilePosition> {
+    let path = from_proto::abs_path(&params.text_document.uri)?;
+    let file = snapshot.analysis.file_id(&path)?;
+    let fa = Arc::clone(snapshot.analysis.file(file)?);
+    let text = file_text(snapshot, file)?;
+    let index = LineIndex::new(&text);
+    let offset = from_proto::offset(&text, &index, params.position, snapshot.encoding);
+    Some(FilePosition { fa, text, offset })
+}
+
+/// A file's text: the session's parse (overlay or indexer) when present,
+/// else a lazy disk read for cold-start facts-only entries.
+pub(crate) fn file_text(snapshot: &Snapshot, file: FileId) -> Option<Arc<str>> {
+    if let Some(fa) = snapshot.analysis.file(file)
+        && let Some(text) = &fa.text
+    {
+        return Some(Arc::clone(text));
+    }
+    let path = snapshot.analysis.path(file)?;
+    std::fs::read_to_string(path).ok().map(Arc::from)
+}
+
+/// A protocol `Location` for a span inside `file`, converting through that
+/// file's own text.
+pub(crate) fn location(snapshot: &Snapshot, file: FileId, span: Span) -> Option<Location> {
+    let uri = file_uri(snapshot, file)?;
+    let text = file_text(snapshot, file)?;
+    let index = LineIndex::new(&text);
+    Some(Location {
+        uri,
+        range: to_proto::range(&text, &index, span, snapshot.encoding),
+    })
+}
+
+/// A location pointing at a whole file: its id declaration when it has one,
+/// else the start of the file.
+pub(crate) fn file_location(snapshot: &Snapshot, file: FileId) -> Option<Location> {
+    let span = snapshot
+        .analysis
+        .file(file)
+        .and_then(|fa| fa.facts.note.id_span);
+    match span {
+        Some(span) => location(snapshot, file, span),
+        None => Some(Location {
+            uri: file_uri(snapshot, file)?,
+            range: lsp_types::Range::default(),
+        }),
+    }
+}
+
+pub(crate) fn file_uri(snapshot: &Snapshot, file: FileId) -> Option<Url> {
+    snapshot.analysis.path(file).and_then(|p| to_proto::url(p))
+}
+
+/// The block of `facts` declaring `anchor`.
+pub(crate) fn anchor_block<'a>(
+    fa: &'a FileAnalysis,
+    anchor: &str,
+) -> Option<&'a morog_sema::BlockFacts> {
+    fa.facts
+        .blocks
+        .iter()
+        .find(|block| block.anchor.as_deref() == Some(anchor))
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    //! Fixture support for handler unit tests: build a snapshot from
+    //! in-memory files, with a `$0` cursor marker in one of them
+    //! (rust-analyzer style, plan §5.7).
+
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use lsp_types::{Position, TextDocumentIdentifier, TextDocumentPositionParams};
+    use morg_parser::LineIndex;
+
+    use crate::PositionEncoding;
+    use crate::analysis::{Analysis, BibIndex, FileAnalysis};
+    use crate::state::Snapshot;
+    use crate::vfs::FileId;
+
+    /// Build a snapshot from `(path, text)` fixtures; exactly one text may
+    /// carry a `$0` marker. Returns the snapshot and the marker's
+    /// `TextDocumentPositionParams`.
+    pub(crate) fn snapshot(
+        files: &[(&str, &str)],
+        bib_keys: &[&str],
+    ) -> (Snapshot, TextDocumentPositionParams) {
+        let bib = Arc::new(BibIndex::from_entries(bib_keys.iter().map(|&key| {
+            let mut entry = morog_bib::BibEntry::minimal(key);
+            entry.collection = morog_bib::CollectionPath("fixtures".into());
+            entry.dir = Path::new("/bib").join(key);
+            entry.meta = Some(morog_bib::BibMeta {
+                title: Some(format!("The {key} paper")),
+                year: Some(2020),
+                doi: None,
+            });
+            entry
+        })));
+        let mut analysis = Analysis {
+            bib,
+            ..Analysis::default()
+        };
+
+        let mut marker = None;
+        for (i, (path, text)) in files.iter().enumerate() {
+            let file = FileId(i as u32);
+            let clean;
+            let text = if let Some(offset) = text.find("$0") {
+                clean = text.replacen("$0", "", 1);
+                assert!(marker.is_none(), "two $0 markers");
+                let index = LineIndex::new(&clean);
+                let position =
+                    crate::to_proto::position(&clean, &index, offset, PositionEncoding::Utf8);
+                marker = Some((path.to_string(), position));
+                clean.as_str()
+            } else {
+                text
+            };
+            let path: Arc<Path> = Arc::from(Path::new(path).to_path_buf());
+            let fa = Arc::new(FileAnalysis::parse(
+                &path,
+                text.into(),
+                &morog_sema::LintConfig::default(),
+                Some(&*analysis.bib),
+            ));
+            analysis.set_file(file, path, fa);
+        }
+        let (path, position) = marker.expect("no $0 marker in fixtures");
+        let params = TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier {
+                uri: lsp_types::Url::from_file_path(&path).unwrap(),
+            },
+            position,
+        };
+        (
+            Snapshot {
+                analysis,
+                encoding: PositionEncoding::Utf8,
+            },
+            params,
+        )
+    }
+
+    /// Render a `Position` compactly for expect tests.
+    pub(crate) fn fmt_position(position: Position) -> String {
+        format!("{}:{}", position.line, position.character)
+    }
+
+    pub(crate) fn fmt_location(location: &lsp_types::Location) -> String {
+        format!(
+            "{} {}..{}",
+            location.uri.path(),
+            fmt_position(location.range.start),
+            fmt_position(location.range.end),
+        )
+    }
+}
