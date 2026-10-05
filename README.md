@@ -40,6 +40,7 @@ the current directory.
 | `morog research list` / `check` | Tabulate STA notes; lint restricted to STA notes |
 | `morog graph [--root ID --depth N] [--evidence] [--published]` | DOT export of the discourse graph; `--evidence` expands topics into evidence clusters |
 | `morog lsp` | The language server over stdio |
+| `morog completions SHELL` | Shell completion script (zsh, bash, fish, ...) to stdout |
 | `morog publish site [-o DIR]` | Static site: one page per `publish: true` note, backlinks, JSON-LD |
 | `morog publish rdf [-o FILE]` | Turtle dump of the published subgraph (stance/op, CiTO, PROV-O) |
 | `morog publish micropub [-o DIR]` | One JSON-LD micropublication bundle per published argument |
@@ -93,6 +94,33 @@ snippets (`base.html`, `note.html`, `backlinks.html`, `index.html`,
 `alias.html`, `style.css`); drop a same-named file into `site_dir` to
 override any of them, eleventy-style. Note frontmatter — including the
 user-owned `extra:` map — is exposed to templates.
+
+## Shell completions
+
+`morog completions <shell>` writes the completion script for zsh, bash,
+fish (and the other shells clap_complete supports) to stdout. It is raw
+script output — the global `--format` flag does not apply. For zsh, drop
+it as `_morog` into a directory on `fpath` before `compinit` runs:
+
+```sh
+morog completions zsh > ~/.local/share/zsh/site-functions/_morog
+# in ~/.zshrc, before compinit:
+fpath=(~/.local/share/zsh/site-functions $fpath)
+```
+
+`install.sh` does this for you when the XDG zsh site-functions directory
+is writable. The file is derived output, so regenerate it whenever the
+tool changes; with chezmoi, a `run_onchange_` script keyed on the pinned
+revs re-runs exactly when they move:
+
+```sh
+# run_onchange_completions.sh — morg 1b91bb4 / morog f9c2b51
+morog completions zsh > ~/.local/share/zsh/site-functions/_morog
+morg completions zsh > ~/.local/share/zsh/site-functions/_morg
+```
+
+Completion of dynamic values (citekeys, tag names) is future work — the
+index could feed it.
 
 ## Development
 

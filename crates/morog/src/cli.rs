@@ -82,6 +82,15 @@ pub enum Command {
         #[command(flatten)]
         bib: BibArgs,
     },
+    /// Generate a shell completion script and write it to stdout
+    ///
+    /// The output is the raw script for the requested shell (the global
+    /// `--format` flag does not apply). For zsh, install it as `_morog` in
+    /// a directory on `fpath`.
+    Completions {
+        /// Shell to generate completions for (zsh, bash, fish, ...)
+        shell: clap_complete::Shell,
+    },
     /// Run the language server over stdio (plan §5)
     ///
     /// The vault root and bibrat root come from the client's

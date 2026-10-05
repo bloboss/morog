@@ -6,6 +6,7 @@
 
 mod bib;
 mod cli;
+mod completions;
 mod config;
 mod graph;
 mod index;
@@ -39,6 +40,7 @@ fn main() -> ExitCode {
         Command::Graph(args) => graph::run(args, &cli.format),
         Command::Tags { name, vault } => tags::run(&name, vault, &cli.format),
         Command::Lint { files, bib } => lint::run(files, &cli.format, &bib),
+        Command::Completions { shell } => completions::run(shell),
         Command::Lsp => lsp::run(),
         Command::Publish { command } => publish::run(command, &cli.format),
     }

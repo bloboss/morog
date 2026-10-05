@@ -11,6 +11,7 @@ license = "MIT"
 biblatex = "0.12"
 blake3 = "1"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 crossbeam-channel = "0.5"
 expect-test = "1"
 ignore = "0.4"
