@@ -25,15 +25,16 @@ case ":$PATH:" in
     *) echo "note: $bin_dir is not on your PATH" ;;
 esac
 
+# Write the starter user config; an existing one is left untouched, so the
+# script stays idempotent.
+echo
+"$bin_dir/morog" init
+
 cat <<'EOF'
 
 Next steps:
   morog index          # build the disposable index for the current vault
   morog lint           # run the STA lints
   morog lsp            # stdio LSP server (wire into your editor)
-
-Configuration (merged key-by-key, later wins):
-  ~/.config/morog/config.toml     user config ([publish], [lint], [tags])
-  <vault>/.morog.toml             vault-local overrides
-  [tags] also falls back to ~/.config/morg/config.toml
+  morog init --vault   # vault-local .morog.toml overrides
 EOF
