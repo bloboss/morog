@@ -9,6 +9,7 @@ mod cli;
 mod config;
 mod graph;
 mod index;
+mod init;
 mod json;
 mod lint;
 mod lsp;
@@ -26,6 +27,7 @@ use cli::{Cli, Command};
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
+        Command::Init { force, vault } => init::run(vault, force),
         Command::Index {
             vault,
             full,

@@ -18,6 +18,21 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Write a starter config file with documented defaults
+    ///
+    /// By default writes the user config at
+    /// `$XDG_CONFIG_HOME/morog/config.toml`; with `--vault` a vault-local
+    /// `.morog.toml` template instead. An existing file is left untouched
+    /// (still success) unless `--force`.
+    Init {
+        /// Overwrite an existing config file
+        #[arg(long)]
+        force: bool,
+        /// Write a vault-local `.morog.toml` template into DIR
+        /// (default: current directory) instead of the user config
+        #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = ".")]
+        vault: Option<PathBuf>,
+    },
     /// Build or refresh the disposable SQLite index for a vault
     Index {
         /// Vault root directory (default: current directory)
