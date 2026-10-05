@@ -30,6 +30,21 @@ esac
 echo
 "$bin_dir/morog" init
 
+# Install the zsh completion into the XDG zsh site-functions directory.
+# The file is derived output ("morog completions zsh"), so regenerating it
+# on every run keeps the script idempotent.
+zsh_fn_dir=${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions
+echo
+if mkdir -p "$zsh_fn_dir" 2>/dev/null \
+    && "$bin_dir/morog" completions zsh > "$zsh_fn_dir/_morog"; then
+    echo "Installed zsh completion: $zsh_fn_dir/_morog"
+    echo "note: the directory must be on fpath before compinit, e.g. in ~/.zshrc:"
+    echo "  fpath=($zsh_fn_dir \$fpath)"
+else
+    echo "note: could not write $zsh_fn_dir/_morog; generate it manually:"
+    echo "  morog completions zsh > /path/on/fpath/_morog"
+fi
+
 cat <<'EOF'
 
 Next steps:
