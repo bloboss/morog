@@ -122,6 +122,18 @@ morg completions zsh > ~/.local/share/zsh/site-functions/_morg
 Completion of dynamic values (citekeys, tag names) is future work — the
 index could feed it.
 
+## Installing
+
+`install.sh` builds the `morog` binary into `~/.cargo/bin` and drops the zsh
+completion into the XDG user directory (see above). On Arch,
+`packaging/PKGBUILD` builds a `morog-git` package instead; it deliberately
+installs the binary and the zsh/bash/fish completions system-wide under
+`/usr/share`, so the two paths do not overlap. The PKGBUILD sources the
+intended GitHub remote, which is not published yet — until it is, switch to
+the commented `git+file://` source line and run `cd packaging && makepkg -si`
+against this checkout. Either way the build fetches the pinned morg-parser
+git dependency over the network during `prepare()`.
+
 ## Development
 
 ```sh
